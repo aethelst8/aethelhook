@@ -1,0 +1,13 @@
+<Window x:Class="AethelHook.Tray.PairingWindow"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        Title="Pair New Device" Width="320" SizeToContent="Height"
+        WindowStartupLocation="CenterOwner"
+        ResizeMode="NoResize">
+    <StackPanel Margin="20" HorizontalAlignment="Center">
+        <TextBlock x:Name="InstructionText" Text="Scan this QR from the AethelHook app's Settings screen:"
+                   TextWrapping="Wrap" TextAlignment="Center" Margin="0,0,0,12" />
+        <Image x:Name="QrImage" Width="220" Height="220" />
+        <TextBlock x:Name="StatusText" Text="Waiting for scan..." Margin="0,12,0,0" HorizontalAlignment="Center" FontStyle="Italic" />
+    </StackPanel>
+</Window>

@@ -1,0 +1,42 @@
+*.iml
+.gradle
+.kotlin
+/local.properties
+/.idea
+.DS_Store
+/build
+/captures
+.externalNativeBuild
+.cxx
+local.properties
+
+# Credentials — never commit these
+*firebase-adminsdk*.json
+*serviceAccountKey*.json
+google-services.json
+keystore.properties
+*.jks
+*.keystore
+*.pfx
+
+# .NET build output
+[Bb]in/
+[Oo]bj/
+.vs/
+
+# Publish / packaging output (built artifacts, not source)
+/dist/publish/
+/dist/publish-tray/
+/AethelHook-Setup.exe
+/AethelHook.API/dist/
+
+# Android build output
+/app/build/
+
+# Runtime logs and local debug artifacts (never source, machine-specific)
+*.log
+hook_debug*.txt
+before_snapshot.json
+
+# Experimental/local-only, not part of the shipped product
+/.agents/
