@@ -54,7 +54,15 @@ Source: "dist\uninstall_hooks.ps1"; DestDir: "{app}"; Flags: ignoreversion
 Source: "dist\aethelhook.ico"; DestDir: "{app}"; Flags: ignoreversion
 
 [Dirs]
-Name: "{commonappdata}\AethelHook"; Permissions: users-full
+; Deliberately NOT users-full here — this folder holds the TLS private key
+; (aethelhook-cert.pfx) and every paired device's auth token (devices.json).
+; Granting the whole folder to Users would let any other local Windows account
+; read both straight off disk, no admin rights needed. Program.cs additionally
+; hardens each sensitive file to Administrators+SYSTEM only as it's written;
+; the only thing the interactive user actually needs read+execute on is the
+; hooks scripts themselves, granted explicitly below.
+Name: "{commonappdata}\AethelHook"
+Name: "{commonappdata}\AethelHook\hooks"; Permissions: users-readexec
 
 [Icons]
 Name: "{userstartup}\AethelHook Tray"; Filename: "{app}\Tray\AethelHook.Tray.exe"; WorkingDir: "{app}\Tray"
@@ -66,8 +74,15 @@ Filename: "{sys}\sc.exe"; Parameters: "delete AethelHook"; Flags: runhidden wait
 ; Register and start the service using sc.exe directly — no PowerShell needed
 Filename: "{sys}\sc.exe"; Parameters: "create AethelHook binPath= ""{app}\AethelHook.API.exe"" start= auto DisplayName= ""AethelHook"""; StatusMsg: "Installing AethelHook service..."; Flags: runhidden waituntilterminated
 Filename: "{sys}\sc.exe"; Parameters: "start AethelHook"; Flags: runhidden waituntilterminated
-; Open firewall ports
-Filename: "{sys}\WindowsPowerShell\v1.0\powershell.exe"; Parameters: "-NonInteractive -NoProfile -ExecutionPolicy Bypass -Command ""Remove-NetFirewallRule -Name 'AethelHook-TCP-5264' -ErrorAction SilentlyContinue; New-NetFirewallRule -Name 'AethelHook-TCP-5264' -DisplayName 'AethelHook (TCP 5264)' -Direction Inbound -Protocol TCP -LocalPort 5264 -Action Allow -Profile Any | Out-Null; Remove-NetFirewallRule -Name 'AethelHook-UDP-47263' -ErrorAction SilentlyContinue; New-NetFirewallRule -Name 'AethelHook-UDP-47263' -DisplayName 'AethelHook Beacon (UDP 47263)' -Direction Inbound -Protocol UDP -LocalPort 47263 -Action Allow -Profile Any | Out-Null"""; StatusMsg: "Configuring firewall..."; Flags: runhidden
+; Open the phone-facing API port. Profile "Any" (rather than Private-only) is
+; deliberate: Tailscale's virtual adapter is commonly classified by Windows as
+; Public/Unidentified, and phones connecting over Tailscale need this rule to
+; match that profile too. The tradeoff is the port is also reachable from a
+; hostile Public Wi-Fi network the PC happens to be on, relying entirely on
+; TLS + per-device token auth (no network-level barrier) for protection there.
+; Note: no inbound rule for the UDP 47263 beacon — it's outbound-only (PC
+; broadcasts, never listens), so no inbound allow rule is needed for it.
+Filename: "{sys}\WindowsPowerShell\v1.0\powershell.exe"; Parameters: "-NonInteractive -NoProfile -ExecutionPolicy Bypass -Command ""Remove-NetFirewallRule -Name 'AethelHook-TCP-5264' -ErrorAction SilentlyContinue; New-NetFirewallRule -Name 'AethelHook-TCP-5264' -DisplayName 'AethelHook (TCP 5264)' -Direction Inbound -Protocol TCP -LocalPort 5264 -Action Allow -Profile Any | Out-Null"""; StatusMsg: "Configuring firewall..."; Flags: runhidden
 ; Wire Claude Code hooks
 Filename: "{sys}\WindowsPowerShell\v1.0\powershell.exe"; Parameters: "-NonInteractive -NoProfile -ExecutionPolicy Bypass -File ""{tmp}\install_hooks.ps1"" ""{%USERPROFILE}"""; StatusMsg: "Configuring Claude Code hooks..."; Flags: runhidden
 ; Launch the tray app now (as the invoking user, not the elevated installer) so it's visible immediately

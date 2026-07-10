@@ -169,6 +169,6 @@ try {
         # one entry, so force it back into array form if that happened.
         $json = $bindings | ConvertTo-Json -Depth 5
         if ($json -notmatch '^\s*\[') { $json = "[$json]" }
-        $json | Out-File $keybindingsPath -Encoding utf8 -Force
+        $json | Out-File $keybindingsPath -Encoding utf8NoBOM -Force
     }
 } catch { }

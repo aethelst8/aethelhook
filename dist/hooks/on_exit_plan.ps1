@@ -31,8 +31,32 @@ try {
 
     $plan = $inputData.tool_input.plan
     if (-not $plan -and $inputData.tool_input.planFilePath) {
+        # planFilePath comes from the ExitPlanMode tool call's own arguments - i.e. it's
+        # AI-generated and, via prompt injection against the agent, effectively
+        # attacker-influenceable. Without confining it to the project directory, a
+        # compromised agent turn could point this at an arbitrary file (api_token.txt,
+        # a .env, an SSH key) and have its contents read and shipped to the phone as
+        # if it were "the plan" - a real local-file-read/exfiltration primitive.
         $planPath = $inputData.tool_input.planFilePath
-        if (Test-Path $planPath) { $plan = Get-Content $planPath -Raw -Encoding utf8 }
+        $cwd      = $inputData.cwd
+        $withinProject = $false
+        if ($cwd -and (Test-Path $planPath)) {
+            try {
+                $resolvedPlanPath = [System.IO.Path]::GetFullPath($planPath)
+                $resolvedCwd      = [System.IO.Path]::GetFullPath($cwd)
+                if (-not $resolvedCwd.EndsWith([System.IO.Path]::DirectorySeparatorChar)) {
+                    $resolvedCwd += [System.IO.Path]::DirectorySeparatorChar
+                }
+                if ($resolvedPlanPath.StartsWith($resolvedCwd, [System.StringComparison]::OrdinalIgnoreCase)) {
+                    $withinProject = $true
+                }
+            } catch { Log "Failed to resolve planFilePath '$planPath': $_" }
+        }
+        if ($withinProject) {
+            $plan = Get-Content $planPath -Raw -Encoding utf8
+        } else {
+            Log "planFilePath '$planPath' is outside the project directory ('$cwd') - refusing to read it"
+        }
     }
 
     if (-not $plan) {

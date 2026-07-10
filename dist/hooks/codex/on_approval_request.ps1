@@ -86,6 +86,12 @@ if ($commandPreview -match '^(?:bash|.*bash\.exe.?)\s+-\w+\s+(.+)$') {
     if ($unwrapped) { $cmdName = $unwrapped }
 }
 
+# The allow-list must key on the FULL command, never just $cmdName (its unwrapped first
+# word) - matching on the first token only meant "always allow" on e.g. "git" silently
+# auto-approved any later command merely starting with "git ". $cmdName (including its
+# "& 'exe'"/"bash -lc" unwrapping above) is kept only for the human-readable log/summary.
+$fullCommand = if ($commandPreview) { $commandPreview.Trim() } else { $toolName }
+
 # Codex turn_id — used by the API to deduplicate parallel tool calls in the same turn
 $codexTurnId = if ($inputData -and $inputData.turn_id) { [string]$inputData.turn_id } else { "" }
 
@@ -101,8 +107,8 @@ $phoneAllowPath = "C:\ProgramData\AethelHook\phone_allow.txt"
 if (Test-Path $phoneAllowPath) {
     $allowedCmds = Get-Content $phoneAllowPath -ErrorAction SilentlyContinue |
                    Where-Object { $_.Trim() -ne "" }
-    if ($allowedCmds -contains $cmdName) {
-        Log "'$cmdName' is in phone allow list - auto-approving silently"
+    if ($allowedCmds -contains $fullCommand) {
+        Log "'$fullCommand' is in phone allow list - auto-approving silently"
         exit 0
     }
 }
@@ -174,15 +180,14 @@ switch ($internalDecision) {
         exit 0
     }
     { $_ -in "always_allow_project", "always_allow_global" } {
-        "$cmdName" | Out-File -FilePath $phoneAllowPath -Append -ErrorAction SilentlyContinue
-        Log "Added '$cmdName' to phone allow list"
+        "$fullCommand" | Out-File -FilePath $phoneAllowPath -Append -ErrorAction SilentlyContinue
+        Log "Added '$fullCommand' to phone allow list"
         exit 0
     }
     "deny_with_reason" {
         $reason  = if ($internalReason) { $internalReason } else { "User declined via phone" }
-        $escaped = $reason -replace '"', '\"'
         Log "Denied with reason: $reason"
-        Write-Output "{`"decision`":`"block`",`"reason`":`"$escaped`"}"
+        Write-Output (@{ decision = "block"; reason = $reason } | ConvertTo-Json -Compress)
         exit 2
     }
     "deny" {
