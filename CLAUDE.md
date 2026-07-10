@@ -364,6 +364,83 @@ significant work session, the same way you'd update any other session/handoff fi
 Older entries can be trimmed once they're no longer relevant; this isn't a full
 changelog (see git history / memory for that), just enough to orient the next session.*
 
+**As of 2026-07-10 (open sourced, public security review, aethelst8.com shipped):**
+
+- **AethelHook went from "considering open source" to actually public the same day.**
+  Created the project's first git repo (it had none before today), picked MIT,
+  cleaned out personal-machine junk (debug logs, a 32MB PowerShell snapshot dump,
+  scratch test scripts, a script leaking the dev's Windows username), and pushed to
+  **https://github.com/aethelst8/aethelhook** under a dedicated `aethelst8` GitHub
+  account (not an org - a personal account was clean enough once a separate
+  `aethelst8@gmail.com` identity existed). `gh` CLI installed via winget for this;
+  needed both a base `gh auth login` and a later `gh auth refresh -s workflow` (the
+  latter specifically to push `.github/workflows/*.yml` files, which the base OAuth
+  scope doesn't allow).
+- **Ran a from-scratch security review before publishing** (5 parallel review passes:
+  API/auth, transport, hook scripts, installer, Android) since going public turns any
+  bug into a same-day 0-day disclosure. Found and fixed 2 Critical + 3 High + several
+  Medium/Low issues - see gotcha #21 and the git history for the "Fix pre-release
+  security review findings" commit for the full list. Worst two: the installer
+  granting every local Windows account Full Control over the folder holding the TLS
+  private key and every device's token, and the phone's "always allow" list matching
+  only a command's first word (allowing "git" once silently auto-approved anything
+  starting with "git "). Also found and fixed, later the same day, a real bug in the
+  WebSearch/WebFetch native-dialog-dismiss fix itself - see gotcha #21.
+- **Removed every em dash from the project** (code comments, docs, hook scripts,
+  Android strings) per an explicit, standing style rule from the user - "never use
+  em dashes, even on the website." Use commas or hyphens instead, going forward,
+  including any future PC-side work and the website.
+- **Signing decision: shipping unsigned for now.** Researched Trusted Signing
+  (blocked - individual developers currently only eligible in US/Canada, and the
+  user is in South Africa), SignPath Foundation / OSSign (both free, but require
+  ~6 months of release history this brand-new repo doesn't have), and a paid OV
+  cert (viable, ~$70-90/yr, but costs money for a first project). Decided to ship
+  the installer and APK unsigned and revisit free signing once the repo is old
+  enough to qualify. The README and the aethelst8.com download page both call out
+  the resulting SmartScreen/UAC-Unknown-Publisher and Android-unknown-source
+  warnings up front so people expect them instead of bailing.
+- **Built and shipped aethelst8.com** as a separate repo,
+  **github.com/aethelst8/aethelst8.github.io** (the special GitHub-Pages
+  user-site repo name, needed for a bare custom domain rather than a subpath).
+  DNS is on Namecheap: 4 A records on `@` to GitHub Pages' IPs
+  (185.199.108/109/110/111.153) plus a CNAME for `www` to `aethelst8.github.io.`
+  (trailing dot required - Namecheap appends the zone name otherwise). Site itself
+  is Vite + React, deployed via a GitHub Actions workflow
+  (`.github/workflows/deploy.yml`, `build_type: workflow` in the Pages API) rather
+  than the legacy branch-based Pages build. Hit two real deployment gotchas worth
+  knowing if this ever needs touching again:
+  1. **Switching Pages `build_type` from `branch` to `workflow` via the API resets
+     `cname` to null.** Has to be re-set explicitly afterward
+     (`gh api -X PUT repos/.../pages -f cname=aethelst8.com`) - it does not restore
+     itself from the repo's `CNAME` file automatically.
+  2. **The legacy branch-deploy and the new Actions-deploy can race** right at the
+     moment `build_type` is switched, and the legacy one (which serves the raw
+     unbuilt repo root, not `dist/`) can win - this produced a live blank-white-screen
+     bug (`index.html` was referencing `/src/main.jsx` directly, which no browser
+     can execute). Fixed by manually re-triggering the Actions workflow
+     (`gh workflow run deploy.yml`) once `build_type` had fully settled on
+     `workflow` - a clean trigger after that point doesn't race with anything.
+  Created a GitHub Release (`v1.0.0`) on the **aethelhook** repo with the built
+  installer and APK attached, since the website needs real binaries to link to.
+  Release-asset filename convention going forward: `aethelhook_v{version}.apk`,
+  version number incremented per release (this means the site's Android download
+  link is NOT the version-agnostic `releases/latest/download/...` pattern anymore -
+  it has to be bumped by hand to the new filename each release, unlike the Windows
+  `.exe` which kept the same fixed name).
+- **Site copy went through a real revision pass** after the user pushed back that
+  the initial version undersold the product - added a whole angle the first draft
+  missed entirely: AethelHook isn't just a safety gate, it's also what lets you
+  walk away from your desk (out with your phone on Tailscale/mobile data) and stay
+  in the loop via notifications, prompt your agent from your phone directly
+  (Session Access), and avoid constantly alt-tabbing back to the IDE just to click
+  Allow. Also fixed real accuracy gaps caught by the user: the setup instructions
+  originally said "open http://localhost:5266/pair in a browser," but the actual
+  flow is scanning a QR code from inside the **Tray app**'s own "Pair New Device"
+  window (verified against the real `PairingWindow.xaml`/`MainWindow.xaml` and the
+  Android app's actual "Scan QR to Pair" button text before writing the copy) - and
+  some Windows PCs show a plain UAC "Unknown Publisher" prompt instead of a
+  SmartScreen screen, both now documented as expected outcomes.
+
 **As of 2026-07-10 (real TLS + certificate pinning shipped, live-verified):**
 
 - **Added genuine transport encryption after initially deciding to defer it** - the
