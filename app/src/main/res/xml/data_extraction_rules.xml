@@ -1,0 +1,14 @@
+<?xml version="1.0" encoding="utf-8"?><!--
+   API 31+ cloud backup / device-transfer rules. Excludes the prefs file holding the
+   per-device API token and LAN/Tailscale IPs - those shouldn't ride along in a cloud
+   backup/restore or a device-to-device transfer.
+   See https://developer.android.com/about/versions/12/backup-restore#xml-changes
+-->
+<data-extraction-rules>
+    <cloud-backup>
+        <exclude domain="sharedpref" path="aethelhook_prefs.xml"/>
+    </cloud-backup>
+    <device-transfer>
+        <exclude domain="sharedpref" path="aethelhook_prefs.xml"/>
+    </device-transfer>
+</data-extraction-rules>

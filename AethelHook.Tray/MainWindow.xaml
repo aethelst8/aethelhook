@@ -1,0 +1,71 @@
+<Window x:Class="AethelHook.Tray.MainWindow"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        Title="AethelHook" Height="560" Width="480"
+        WindowStartupLocation="Manual"
+        ResizeMode="CanResizeWithGrip">
+    <Grid Margin="16">
+        <Grid.RowDefinitions>
+            <RowDefinition Height="Auto" />
+            <RowDefinition Height="Auto" />
+            <RowDefinition Height="*" />
+            <RowDefinition Height="Auto" />
+            <RowDefinition Height="2*" />
+        </Grid.RowDefinitions>
+
+        <!-- Status header -->
+        <StackPanel Grid.Row="0" Orientation="Horizontal" Margin="0,0,0,4">
+            <TextBlock x:Name="ApiStatusText" Text="API: checking..." Margin="0,0,16,0" FontWeight="Bold" />
+            <TextBlock x:Name="PhoneStatusText" Text="Phone: checking..." />
+        </StackPanel>
+
+        <StackPanel Grid.Row="1" Orientation="Horizontal" Margin="0,0,0,12">
+            <TextBlock Text="Gateway" VerticalAlignment="Center" Margin="0,0,8,0" />
+            <ToggleButton x:Name="GatewayToggle" Content="..." Width="50" Click="GatewayToggle_Click" />
+        </StackPanel>
+
+        <!-- Devices -->
+        <DockPanel Grid.Row="2">
+            <DockPanel DockPanel.Dock="Top">
+                <TextBlock Text="Paired Devices" FontWeight="Bold" VerticalAlignment="Center" />
+                <Button Content="Pair New Device" HorizontalAlignment="Right" Padding="8,2" Click="PairNewDevice_Click" />
+            </DockPanel>
+            <ListView x:Name="DeviceList" Margin="0,6,0,0">
+                <ListView.View>
+                    <GridView>
+                        <GridViewColumn Header="Label" Width="90" DisplayMemberBinding="{Binding Label}" />
+                        <GridViewColumn Header="Token" Width="120" DisplayMemberBinding="{Binding MaskedToken}" />
+                        <GridViewColumn Header="Paired" Width="120" DisplayMemberBinding="{Binding PairedAt}" />
+                        <GridViewColumn Header="" Width="70">
+                            <GridViewColumn.CellTemplate>
+                                <DataTemplate>
+                                    <Button Content="Revoke" Padding="4,1" Click="Revoke_Click" />
+                                </DataTemplate>
+                            </GridViewColumn.CellTemplate>
+                        </GridViewColumn>
+                    </GridView>
+                </ListView.View>
+            </ListView>
+        </DockPanel>
+
+        <TextBlock Grid.Row="3" Text="Live Feed" FontWeight="Bold" Margin="0,16,0,6" />
+
+        <!-- Live feed -->
+        <ListView x:Name="FeedList" Grid.Row="4">
+            <ListView.View>
+                <GridView>
+                    <GridViewColumn Header="Time" Width="70" DisplayMemberBinding="{Binding Time}" />
+                    <GridViewColumn Header="Tool" Width="90" DisplayMemberBinding="{Binding ToolName}" />
+                    <GridViewColumn Header="Command" Width="140" DisplayMemberBinding="{Binding CommandName}" />
+                    <GridViewColumn Header="Status" Width="80">
+                        <GridViewColumn.CellTemplate>
+                            <DataTemplate>
+                                <TextBlock Text="{Binding StatusText}" Foreground="{Binding StatusColor}" FontWeight="Bold" />
+                            </DataTemplate>
+                        </GridViewColumn.CellTemplate>
+                    </GridViewColumn>
+                </GridView>
+            </ListView.View>
+        </ListView>
+    </Grid>
+</Window>

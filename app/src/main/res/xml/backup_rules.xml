@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="utf-8"?><!--
+   Used for legacy Auto Backup and `adb backup` on pre-API-31 devices. Excludes the
+   prefs file holding the per-device API token and LAN/Tailscale IPs - those shouldn't
+   ride along in a backup/restore dump.
+   See https://developer.android.com/guide/topics/data/autobackup
+-->
+<full-backup-content>
+    <exclude domain="sharedpref" path="aethelhook_prefs.xml"/>
+</full-backup-content>

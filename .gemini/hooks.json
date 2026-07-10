@@ -1,0 +1,89 @@
+﻿{
+    "hooks":  {
+                  "PreToolUse":  [
+                                     {
+                                         "matcher":  "run_command",
+                                         "hooks":  [
+                                                       {
+                                                           "type":  "command",
+                                                           "command":  "powershell.exe -ExecutionPolicy Bypass -File C:\\AethelHook\\.gemini\\hooks\\on_approval_request.ps1",
+                                                           "timeout":  90
+                                                       }
+                                                   ]
+                                     },
+                                     {
+                                         "matcher":  "write_file",
+                                         "hooks":  [
+                                                       {
+                                                           "type":  "command",
+                                                           "command":  "powershell.exe -ExecutionPolicy Bypass -File C:\\AethelHook\\.gemini\\hooks\\on_approval_request.ps1",
+                                                           "timeout":  90
+                                                       }
+                                                   ]
+                                     },
+                                     {
+                                         "matcher":  "replace_file_content",
+                                         "hooks":  [
+                                                       {
+                                                           "type":  "command",
+                                                           "command":  "powershell.exe -ExecutionPolicy Bypass -File C:\\AethelHook\\.gemini\\hooks\\on_approval_request.ps1",
+                                                           "timeout":  90
+                                                       }
+                                                   ]
+                                     },
+                                     {
+                                         "matcher":  "multi_replace_file_content",
+                                         "hooks":  [
+                                                       {
+                                                           "type":  "command",
+                                                           "command":  "powershell.exe -ExecutionPolicy Bypass -File C:\\AethelHook\\.gemini\\hooks\\on_approval_request.ps1",
+                                                           "timeout":  90
+                                                       }
+                                                   ]
+                                     },
+                                     {
+                                         "matcher":  "write_to_file",
+                                         "hooks":  [
+                                                       {
+                                                           "type":  "command",
+                                                           "command":  "powershell.exe -ExecutionPolicy Bypass -File C:\\AethelHook\\.gemini\\hooks\\on_approval_request.ps1",
+                                                           "timeout":  90
+                                                       }
+                                                   ]
+                                     }
+                                 ],
+                  "SessionEnd":  [
+                                     {
+                                         "hooks":  [
+                                                       {
+                                                           "type":  "command",
+                                                           "command":  "powershell.exe -ExecutionPolicy Bypass -File C:\\AethelHook\\.gemini\\hooks\\on_task_complete.ps1",
+                                                           "timeout":  5
+                                                       }
+                                                   ]
+                                     }
+                                 ],
+                  "AfterAgent":  [
+                                     {
+                                         "hooks":  [
+                                                       {
+                                                           "type":  "command",
+                                                           "command":  "powershell.exe -ExecutionPolicy Bypass -File C:\\AethelHook\\.gemini\\hooks\\on_task_complete.ps1",
+                                                           "timeout":  5
+                                                       }
+                                                   ]
+                                     }
+                                 ],
+                  "Stop":  [
+                               {
+                                   "hooks":  [
+                                                 {
+                                                     "type":  "command",
+                                                     "command":  "powershell.exe -ExecutionPolicy Bypass -File C:\\AethelHook\\.gemini\\hooks\\on_task_complete.ps1",
+                                                     "timeout":  5
+                                                 }
+                                             ]
+                               }
+                           ]
+              }
+}
