@@ -23,16 +23,19 @@ New-Service -Name $ServiceName `
 
 Start-Service -Name $ServiceName
 
-# Open firewall ports so the Android app can reach this PC on the LAN
+# Open the phone-facing API port so the Android app can reach this PC. Profile
+# "Any" (not Private-only) is deliberate: Tailscale's virtual adapter is commonly
+# classified as Public/Unidentified by Windows, and phones connecting over
+# Tailscale need this rule to match that profile too - the tradeoff is the port
+# is also reachable from a hostile Public Wi-Fi network, relying entirely on
+# TLS + per-device token auth (no network-level barrier) for protection there.
+# No inbound rule for the UDP 47263 beacon - it's outbound-only (PC broadcasts,
+# never listens), so no inbound allow rule is needed for it. The Remove- call
+# below still cleans up that rule name in case an older install created it.
 Remove-NetFirewallRule -Name "AethelHook-TCP-5264"  -ErrorAction SilentlyContinue
 Remove-NetFirewallRule -Name "AethelHook-UDP-47263" -ErrorAction SilentlyContinue
 
 New-NetFirewallRule -Name "AethelHook-TCP-5264" `
     -DisplayName "AethelHook (TCP 5264)" `
     -Direction Inbound -Protocol TCP -LocalPort 5264 `
-    -Action Allow -Profile Any | Out-Null
-
-New-NetFirewallRule -Name "AethelHook-UDP-47263" `
-    -DisplayName "AethelHook Beacon (UDP 47263)" `
-    -Direction Inbound -Protocol UDP -LocalPort 47263 `
     -Action Allow -Profile Any | Out-Null

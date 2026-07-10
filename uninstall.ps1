@@ -74,7 +74,7 @@ if (Test-Path $ClaudeSettings) {
             }
         }
 
-        $settings | ConvertTo-Json -Depth 10 | Out-File $ClaudeSettings -Encoding utf8 -Force
+        $settings | ConvertTo-Json -Depth 10 | Out-File $ClaudeSettings -Encoding utf8NoBOM -Force
         Write-Host "Claude Code settings restored. Native dialogs will reappear." -ForegroundColor Green
     } catch {
         Write-Host "  Warning: could not update $ClaudeSettings — $_" -ForegroundColor Yellow

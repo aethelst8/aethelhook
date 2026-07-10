@@ -6,9 +6,9 @@
 -->
 <data-extraction-rules>
     <cloud-backup>
-        <exclude domain="sharedpref" path="aethelhook_prefs.xml"/>
+        <exclude domain="sharedpref" path="aethelhook_prefs_secure.xml"/>
     </cloud-backup>
     <device-transfer>
-        <exclude domain="sharedpref" path="aethelhook_prefs.xml"/>
+        <exclude domain="sharedpref" path="aethelhook_prefs_secure.xml"/>
     </device-transfer>
 </data-extraction-rules>

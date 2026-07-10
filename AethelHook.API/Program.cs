@@ -10,6 +10,8 @@ using System.Text.Json.Serialization;
 using System.Collections.Concurrent;
 using System.Security.Cryptography;
 using System.Security.Cryptography.X509Certificates;
+using System.Security.AccessControl;
+using System.Security.Principal;
 using System.Linq;
 using QRCoder;
 
@@ -300,6 +302,7 @@ void SaveProjectState()
         {
             Directory.CreateDirectory(Path.GetDirectoryName(ProjectStateFilePath)!);
             File.WriteAllText(ProjectStateFilePath, json);
+            CryptoUtil.RestrictToAdminSystem(ProjectStateFilePath);
         }
     }
     catch (Exception ex) { Console.WriteLine($"[ProjectState] Save failed: {ex.Message}"); }
@@ -1502,6 +1505,7 @@ static string LoadOrCreateApiToken()
     System.Security.Cryptography.RandomNumberGenerator.Fill(bytes);
     var token = Convert.ToHexString(bytes).ToLower();
     File.WriteAllText(path, token);
+    CryptoUtil.RestrictToAdminSystem(path);
     Console.WriteLine($"[Security] New API token generated. Token file: {path}");
     return token;
 }
@@ -1532,11 +1536,35 @@ static string? GetTailscaleIpAddress()
 // public root and the phone-side check never looks at expiry, only the hash.
 static X509Certificate2 LoadOrCreateHttpsCertificate(string localIp)
 {
-    var certPath = Path.Combine(
-        Environment.GetFolderPath(Environment.SpecialFolder.CommonApplicationData), "AethelHook", "aethelhook-cert.pfx");
-    // Not a real secret - export/import password only, same trust boundary as the
-    // existing plaintext api_token.txt (local file access is already the boundary).
-    const string certPassword = "aethelhook";
+    var certDir = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.CommonApplicationData), "AethelHook");
+    var certPath = Path.Combine(certDir, "aethelhook-cert.pfx");
+    var certPasswordPath = Path.Combine(certDir, "aethelhook-cert.pwd");
+
+    // Older versions of this file used a hardcoded PFX export password ("aethelhook"),
+    // now public since this project is open source. A password baked into a public repo
+    // is no password at all, so any cert generated under that scheme is force-regenerated
+    // here (one extra forced re-pair on upgrade, same precedent as gotcha #20's original
+    // rollout) rather than silently keeping the now-known password around.
+    if (File.Exists(certPath) && !File.Exists(certPasswordPath))
+    {
+        Console.WriteLine("[TLS] Found a certificate from before per-install password randomization — regenerating");
+        File.Delete(certPath);
+    }
+
+    string certPassword;
+    if (File.Exists(certPasswordPath))
+    {
+        certPassword = File.ReadAllText(certPasswordPath).Trim();
+    }
+    else
+    {
+        var pwBytes = new byte[32];
+        RandomNumberGenerator.Fill(pwBytes);
+        certPassword = Convert.ToBase64String(pwBytes);
+        Directory.CreateDirectory(certDir);
+        File.WriteAllText(certPasswordPath, certPassword);
+        CryptoUtil.RestrictToAdminSystem(certPasswordPath);
+    }
 
     if (!File.Exists(certPath))
     {
@@ -1559,6 +1587,7 @@ static X509Certificate2 LoadOrCreateHttpsCertificate(string localIp)
 
         Directory.CreateDirectory(Path.GetDirectoryName(certPath)!);
         File.WriteAllBytes(certPath, cert.Export(X509ContentType.Pfx, certPassword));
+        CryptoUtil.RestrictToAdminSystem(certPath);
     }
 
     // Always reload from disk rather than handing Kestrel the freshly-created
@@ -2208,6 +2237,34 @@ public static class CryptoUtil
     // time can leak how many leading characters an attacker's guess got right.
     public static bool ConstantTimeEquals(string a, string b) =>
         CryptographicOperations.FixedTimeEquals(Encoding.UTF8.GetBytes(a), Encoding.UTF8.GetBytes(b));
+
+    // Strips inherited permissions from a sensitive file (device tokens, TLS private key,
+    // session state) and grants access only to Administrators + SYSTEM. Without this, these
+    // files sit directly under C:\ProgramData\AethelHook and inherit whatever ACL the
+    // installer/OS placed on that folder — on a multi-user PC that previously meant every
+    // other local Windows account (no admin rights needed) could read every paired device's
+    // bearer token or the TLS private key straight off disk.
+#pragma warning disable CA1416 // this app only ever runs on Windows (LocalSystem service)
+    public static void RestrictToAdminSystem(string path)
+    {
+        try
+        {
+            var security = new FileSecurity();
+            security.SetAccessRuleProtection(isProtected: true, preserveInheritance: false);
+            security.AddAccessRule(new FileSystemAccessRule(
+                new SecurityIdentifier(WellKnownSidType.BuiltinAdministratorsSid, null),
+                FileSystemRights.FullControl, AccessControlType.Allow));
+            security.AddAccessRule(new FileSystemAccessRule(
+                new SecurityIdentifier(WellKnownSidType.LocalSystemSid, null),
+                FileSystemRights.FullControl, AccessControlType.Allow));
+            new FileInfo(path).SetAccessControl(security);
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"[Security] Failed to restrict permissions on {path}: {ex.Message}");
+        }
+    }
+#pragma warning restore CA1416
 }
 
 // Per-device API tokens, replacing the old single-shared-token model. Device count is
@@ -2285,6 +2342,7 @@ public static class DeviceRegistry
                 Directory.CreateDirectory(Path.GetDirectoryName(DevicesPath)!);
                 var json = JsonSerializer.Serialize(_devices.Values.ToList(), new JsonSerializerOptions { WriteIndented = true });
                 File.WriteAllText(DevicesPath, json);
+                CryptoUtil.RestrictToAdminSystem(DevicesPath);
             }
             catch (Exception ex)
             {

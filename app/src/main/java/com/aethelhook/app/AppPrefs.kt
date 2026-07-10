@@ -1,7 +1,10 @@
 package com.aethelhook.app
 
 import android.content.Context
+import android.content.SharedPreferences
 import androidx.core.content.edit
+import androidx.security.crypto.EncryptedSharedPreferences
+import androidx.security.crypto.MasterKey
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.encodeToString
 import kotlinx.serialization.json.Json
@@ -19,7 +22,39 @@ internal val APPROVED_DECISIONS = setOf("allow", "allow_once", "always_allow_pro
 internal val DENIED_DECISIONS   = setOf("deny", "deny_with_reason")
 
 object AppPrefs {
-    private const val PREFS = "aethelhook_prefs"
+    // Renamed from the old plaintext "aethelhook_prefs" - this file is now encrypted
+    // (Android Keystore-backed AES-GCM via EncryptedSharedPreferences), so it's a
+    // distinct underlying file rather than an in-place migration of plaintext data.
+    // Practical effect: upgrading from a pre-encryption install clears the stored
+    // token/IPs, requiring one re-pair - same precedent as the TLS-pinning rollout.
+    private const val PREFS = "aethelhook_prefs_secure"
+
+    @Volatile private var cachedPrefs: SharedPreferences? = null
+
+    // Android Keystore-backed encrypted prefs for the token/fingerprint/IPs this file
+    // stores. EncryptedSharedPreferences is deprecated as of security-crypto 1.1.0
+    // (Google now points new code at raw Keystore APIs directly) but still fully
+    // functional - kept here rather than hand-rolling Keystore/Cipher/IV handling for
+    // what's a small, low-traffic set of string values.
+    private fun securePrefs(ctx: Context): SharedPreferences {
+        cachedPrefs?.let { return it }
+        synchronized(this) {
+            cachedPrefs?.let { return it }
+            val appCtx = ctx.applicationContext
+            val masterKey = MasterKey.Builder(appCtx)
+                .setKeyScheme(MasterKey.KeyScheme.AES256_GCM)
+                .build()
+            val created = EncryptedSharedPreferences.create(
+                appCtx,
+                PREFS,
+                masterKey,
+                EncryptedSharedPreferences.PrefKeyEncryptionScheme.AES256_SIV,
+                EncryptedSharedPreferences.PrefValueEncryptionScheme.AES256_GCM
+            )
+            cachedPrefs = created
+            return created
+        }
+    }
 
     // Network config — stored as IPs, URLs are derived
     private const val KEY_LAN_IP       = "lan_ip"
@@ -49,7 +84,7 @@ object AppPrefs {
     // ── LAN IP ────────────────────────────────────────────────────────────────
 
     fun getLanIp(ctx: Context): String {
-        val prefs = ctx.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
+        val prefs = securePrefs(ctx)
         val stored = prefs.getString(KEY_LAN_IP, "") ?: ""
         if (stored.isNotBlank()) return stored
         val oldUrl = prefs.getString(KEY_API_URL, "") ?: ""
@@ -61,24 +96,24 @@ object AppPrefs {
     }
 
     fun setLanIp(ctx: Context, ip: String) =
-        ctx.getSharedPreferences(PREFS, Context.MODE_PRIVATE).edit { putString(KEY_LAN_IP, ip.trim()) }
+        securePrefs(ctx).edit { putString(KEY_LAN_IP, ip.trim()) }
 
     // ── Tailscale IP ──────────────────────────────────────────────────────────
 
     fun getTailscaleIp(ctx: Context): String =
-        ctx.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
+        securePrefs(ctx)
             .getString(KEY_TAILSCALE_IP, "") ?: ""
 
     fun setTailscaleIp(ctx: Context, ip: String) =
-        ctx.getSharedPreferences(PREFS, Context.MODE_PRIVATE).edit { putString(KEY_TAILSCALE_IP, ip.trim()) }
+        securePrefs(ctx).edit { putString(KEY_TAILSCALE_IP, ip.trim()) }
 
     // ── Port ──────────────────────────────────────────────────────────────────
 
     fun getPort(ctx: Context): Int =
-        ctx.getSharedPreferences(PREFS, Context.MODE_PRIVATE).getInt(KEY_PORT, 5264)
+        securePrefs(ctx).getInt(KEY_PORT, 5264)
 
     fun setPort(ctx: Context, port: Int) =
-        ctx.getSharedPreferences(PREFS, Context.MODE_PRIVATE).edit { putInt(KEY_PORT, port) }
+        securePrefs(ctx).edit { putInt(KEY_PORT, port) }
 
     // ── Derived full URLs ─────────────────────────────────────────────────────
 
@@ -95,38 +130,38 @@ object AppPrefs {
     // ── Active URL (set by network monitor, not by user directly) ─────────────
 
     fun getApiUrl(ctx: Context): String =
-        ctx.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
+        securePrefs(ctx)
             .getString(KEY_API_URL, "") ?: ""
 
     fun setApiUrl(ctx: Context, url: String) =
-        ctx.getSharedPreferences(PREFS, Context.MODE_PRIVATE).edit { putString(KEY_API_URL, url) }
+        securePrefs(ctx).edit { putString(KEY_API_URL, url) }
 
     // ── Hook wait timeout ─────────────────────────────────────────────────────
 
     fun getTimeout(ctx: Context): Int =
-        ctx.getSharedPreferences(PREFS, Context.MODE_PRIVATE).getInt(KEY_TIMEOUT, 80)
+        securePrefs(ctx).getInt(KEY_TIMEOUT, 80)
 
     fun setTimeout(ctx: Context, secs: Int) =
-        ctx.getSharedPreferences(PREFS, Context.MODE_PRIVATE).edit { putInt(KEY_TIMEOUT, secs) }
+        securePrefs(ctx).edit { putInt(KEY_TIMEOUT, secs) }
 
     // ── Session Access: last-picked agent ("claude" or "codex"), sticky like the project ──
 
     fun getLastAgent(ctx: Context): String =
-        ctx.getSharedPreferences(PREFS, Context.MODE_PRIVATE).getString(KEY_LAST_AGENT, "claude") ?: "claude"
+        securePrefs(ctx).getString(KEY_LAST_AGENT, "claude") ?: "claude"
 
     fun setLastAgent(ctx: Context, agent: String) =
-        ctx.getSharedPreferences(PREFS, Context.MODE_PRIVATE).edit { putString(KEY_LAST_AGENT, agent) }
+        securePrefs(ctx).edit { putString(KEY_LAST_AGENT, agent) }
 
     // ── Approval history ──────────────────────────────────────────────────────
 
     fun getHistory(ctx: Context): List<ApprovalRecord> {
-        val json = ctx.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
+        val json = securePrefs(ctx)
             .getString(KEY_HISTORY, "[]") ?: "[]"
         return try { Json.decodeFromString(json) } catch (e: Exception) { emptyList() }
     }
 
     fun addRecord(ctx: Context, record: ApprovalRecord) {
-        val prefs = ctx.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
+        val prefs = securePrefs(ctx)
         val list = getHistory(ctx).toMutableList()
         list.add(0, record)
         val trimmed = list.take(50)
@@ -142,7 +177,7 @@ object AppPrefs {
     }
 
     fun updateDecision(ctx: Context, sessionId: String, decision: String) {
-        val prefs = ctx.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
+        val prefs = securePrefs(ctx)
         val list = getHistory(ctx).toMutableList()
         val idx = list.indexOfFirst { it.sessionId == sessionId }
         if (idx >= 0) {
@@ -160,7 +195,7 @@ object AppPrefs {
 
     fun clearHistory(ctx: Context) {
         val today = System.currentTimeMillis() / (24L * 60 * 60 * 1000)
-        ctx.getSharedPreferences(PREFS, Context.MODE_PRIVATE).edit {
+        securePrefs(ctx).edit {
             remove(KEY_HISTORY)
             putInt(KEY_TOTAL_COUNT, 0)
             putInt(KEY_APPROVED_COUNT, 0)
@@ -172,18 +207,18 @@ object AppPrefs {
     // ── Stat counters ─────────────────────────────────────────────────────────
 
     fun getTotalCount(ctx: Context): Int =
-        ctx.getSharedPreferences(PREFS, Context.MODE_PRIVATE).getInt(KEY_TOTAL_COUNT, 0)
+        securePrefs(ctx).getInt(KEY_TOTAL_COUNT, 0)
 
     fun getApprovedCount(ctx: Context): Int =
-        ctx.getSharedPreferences(PREFS, Context.MODE_PRIVATE).getInt(KEY_APPROVED_COUNT, 0)
+        securePrefs(ctx).getInt(KEY_APPROVED_COUNT, 0)
 
     fun getDeniedCount(ctx: Context): Int =
-        ctx.getSharedPreferences(PREFS, Context.MODE_PRIVATE).getInt(KEY_DENIED_COUNT, 0)
+        securePrefs(ctx).getInt(KEY_DENIED_COUNT, 0)
 
     // ── Auto-clear every 48 hours at midnight boundary ────────────────────────
 
     fun maybeClearOldHistory(ctx: Context) {
-        val prefs = ctx.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
+        val prefs = securePrefs(ctx)
         val today = System.currentTimeMillis() / (24L * 60 * 60 * 1000)
         if (!prefs.contains(KEY_LAST_CLEAR_DAY)) {
             prefs.edit { putLong(KEY_LAST_CLEAR_DAY, today) }
@@ -196,40 +231,40 @@ object AppPrefs {
     // ── Appearance / gateway ──────────────────────────────────────────────────
 
     fun getDarkMode(ctx: Context): Boolean =
-        ctx.getSharedPreferences(PREFS, Context.MODE_PRIVATE).getBoolean(KEY_DARK_MODE, true)
+        securePrefs(ctx).getBoolean(KEY_DARK_MODE, true)
 
     fun setDarkMode(ctx: Context, dark: Boolean) =
-        ctx.getSharedPreferences(PREFS, Context.MODE_PRIVATE).edit { putBoolean(KEY_DARK_MODE, dark) }
+        securePrefs(ctx).edit { putBoolean(KEY_DARK_MODE, dark) }
 
     fun getGatewayEnabled(ctx: Context): Boolean =
-        ctx.getSharedPreferences(PREFS, Context.MODE_PRIVATE).getBoolean(KEY_GATEWAY_ENABLED, true)
+        securePrefs(ctx).getBoolean(KEY_GATEWAY_ENABLED, true)
 
     fun setGatewayEnabled(ctx: Context, enabled: Boolean) =
-        ctx.getSharedPreferences(PREFS, Context.MODE_PRIVATE).edit { putBoolean(KEY_GATEWAY_ENABLED, enabled) }
+        securePrefs(ctx).edit { putBoolean(KEY_GATEWAY_ENABLED, enabled) }
 
     fun getCodexGatewayEnabled(ctx: Context): Boolean =
-        ctx.getSharedPreferences(PREFS, Context.MODE_PRIVATE).getBoolean(KEY_CODEX_GATEWAY_ENABLED, true)
+        securePrefs(ctx).getBoolean(KEY_CODEX_GATEWAY_ENABLED, true)
 
     fun setCodexGatewayEnabled(ctx: Context, enabled: Boolean) =
-        ctx.getSharedPreferences(PREFS, Context.MODE_PRIVATE).edit { putBoolean(KEY_CODEX_GATEWAY_ENABLED, enabled) }
+        securePrefs(ctx).edit { putBoolean(KEY_CODEX_GATEWAY_ENABLED, enabled) }
 
     // ── API token (shared secret — auto-populated from UDP beacon) ────────────
 
     fun getApiToken(ctx: Context): String =
-        ctx.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
+        securePrefs(ctx)
             .getString(KEY_API_TOKEN, "") ?: ""
 
     fun setApiToken(ctx: Context, token: String) =
-        ctx.getSharedPreferences(PREFS, Context.MODE_PRIVATE).edit { putString(KEY_API_TOKEN, token) }
+        securePrefs(ctx).edit { putString(KEY_API_TOKEN, token) }
 
     // ── Pinned HTTPS cert fingerprint (SHA-256 hex, received via the QR pairing
     // payload's `c` field — not from the PC over the network, since the QR scan
     // itself is the trust root here, not a certificate authority) ──────────────
 
     fun getCertFingerprint(ctx: Context): String =
-        ctx.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
+        securePrefs(ctx)
             .getString(KEY_CERT_FINGERPRINT, "") ?: ""
 
     fun setCertFingerprint(ctx: Context, fingerprint: String) =
-        ctx.getSharedPreferences(PREFS, Context.MODE_PRIVATE).edit { putString(KEY_CERT_FINGERPRINT, fingerprint) }
+        securePrefs(ctx).edit { putString(KEY_CERT_FINGERPRINT, fingerprint) }
 }

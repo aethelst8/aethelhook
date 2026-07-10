@@ -82,6 +82,9 @@ dependencies {
     implementation("com.journeyapps:zxing-android-embedded:4.3.0")
     // Fingerprint/PIN gate for revealing masked IP/token values
     implementation("androidx.biometric:biometric:1.1.0")
+    // Encrypts the SharedPreferences file holding the device API token and pinned
+    // cert fingerprint (Android Keystore-backed AES-GCM), instead of plain-text prefs.
+    implementation("androidx.security:security-crypto:1.1.0")
     // Force a modern Fragment version - zxing-android-embedded's appcompat and
     // biometric 1.1.0 both transitively pull fragment ~1.2.x, which is too old for
     // FragmentActivity's ActivityResult APIs (MainActivity became a FragmentActivity

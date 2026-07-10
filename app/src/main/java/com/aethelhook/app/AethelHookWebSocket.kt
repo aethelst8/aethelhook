@@ -352,7 +352,7 @@ object AethelHookWebSocket {
             put("reason",     reason)
         }.toString()
         webSocket?.send(json)
-        Log.d(TAG, "Decision sent over WS: $json")
+        Log.d(TAG, "Decision sent over WS: session=$sessionId decision=$decision")
     }
 
     fun sendQuestionAnswer(sessionId: String, answers: JSONObject) {
@@ -362,7 +362,7 @@ object AethelHookWebSocket {
             put("answers",    answers)
         }.toString()
         webSocket?.send(json)
-        Log.d(TAG, "Question answer sent over WS: $json")
+        Log.d(TAG, "Question answer sent over WS: session=$sessionId")
     }
 
     fun sendPlanReviewDecision(sessionId: String, decision: String, feedback: String = "") {
@@ -373,7 +373,7 @@ object AethelHookWebSocket {
             put("feedback",   feedback)
         }.toString()
         webSocket?.send(json)
-        Log.d(TAG, "Plan review decision sent over WS: $json")
+        Log.d(TAG, "Plan review decision sent over WS: session=$sessionId decision=$decision")
     }
 
     fun newBoundHttpClient(ctx: Context? = null): OkHttpClient {

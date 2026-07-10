@@ -71,7 +71,11 @@ class DecisionBroadcastReceiver : BroadcastReceiver() {
             try {
                 val payload = """{"session_id":"$sessionId","decision":"$decision"}"""
                 val body    = payload.toRequestBody("application/json".toMediaType())
-                val request = Request.Builder().url(respondUrl).post(body).build()
+                val request = Request.Builder()
+                    .url(respondUrl)
+                    .addHeader("X-AethelHook-Token", AppPrefs.getApiToken(context))
+                    .post(body)
+                    .build()
 
                 AethelHookWebSocket.newBoundHttpClient(context).newCall(request).execute().use { response ->
                     Log.d("ÆthelHook", "POST $respondUrl → HTTP ${response.code}")

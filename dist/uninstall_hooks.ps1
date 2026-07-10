@@ -30,5 +30,5 @@ try {
         }
     }
 
-    $s | ConvertTo-Json -Depth 10 | Out-File $settingsPath -Encoding utf8 -Force
+    $s | ConvertTo-Json -Depth 10 | Out-File $settingsPath -Encoding utf8NoBOM -Force
 } catch {}

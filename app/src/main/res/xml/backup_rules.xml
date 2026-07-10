@@ -5,5 +5,5 @@
    See https://developer.android.com/guide/topics/data/autobackup
 -->
 <full-backup-content>
-    <exclude domain="sharedpref" path="aethelhook_prefs.xml"/>
+    <exclude domain="sharedpref" path="aethelhook_prefs_secure.xml"/>
 </full-backup-content>
