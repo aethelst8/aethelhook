@@ -69,7 +69,7 @@ object AethelHookWebSocket {
         if (running) return
         running = true
         appCtx = ctx.applicationContext
-        Log.d(TAG, "Starting — LAN + Tailscale auto-switch enabled")
+        Log.d(TAG, "Starting - LAN + Tailscale auto-switch enabled")
         startNetworkMonitor(ctx)
         evaluateAndSwitchUrl(ctx)
         scheduleConnect(ctx)
@@ -105,7 +105,7 @@ object AethelHookWebSocket {
         evaluateAndSwitchUrl(ctx)
     }
 
-    // ── Network monitoring — auto-switches URL on WiFi ↔ mobile data ─────────
+    // ── Network monitoring - auto-switches URL on WiFi ↔ mobile data ─────────
 
     private fun startNetworkMonitor(ctx: Context) {
         val cm = ctx.getSystemService(Context.CONNECTIVITY_SERVICE) as ConnectivityManager
@@ -114,7 +114,7 @@ object AethelHookWebSocket {
                 evaluateAndSwitchUrl(ctx, caps)
             }
             override fun onLost(network: Network) {
-                Log.d(TAG, "Network lost — waiting for reconnect")
+                Log.d(TAG, "Network lost - waiting for reconnect")
                 connected = false
                 connectionType = ConnectionType.NONE
             }
@@ -164,7 +164,7 @@ object AethelHookWebSocket {
         }
 
         if (targetUrl.isBlank()) {
-            Log.d(TAG, "No URL configured — waiting for beacon or manual entry in Settings")
+            Log.d(TAG, "No URL configured - waiting for beacon or manual entry in Settings")
             return
         }
 
@@ -203,7 +203,7 @@ object AethelHookWebSocket {
 
     private fun doConnect(ctx: Context) {
         val url = wsUrl(ctx) ?: run {
-            Log.d(TAG, "No gateway URL — waiting for beacon or Settings entry")
+            Log.d(TAG, "No gateway URL - waiting for beacon or Settings entry")
             if (running) scheduleConnect(ctx, 5_000)
             return
         }
@@ -262,7 +262,7 @@ object AethelHookWebSocket {
                 if (isStale(ws)) return
                 connected = false
                 connectionType = ConnectionType.NONE
-                Log.d(TAG, "WS closed ($code $reason) — retrying in 3s")
+                Log.d(TAG, "WS closed ($code $reason) - retrying in 3s")
                 if (running) scheduleConnect(ctx, 3_000)
             }
         })
@@ -276,12 +276,12 @@ object AethelHookWebSocket {
     private fun tryTailscaleFallback(ctx: Context) {
         val tsUrl = AppPrefs.getTailscaleUrl(ctx).ifBlank { return }
         if (tsUrl == AppPrefs.getApiUrl(ctx)) return
-        Log.d(TAG, "3 consecutive failures — evaluating Tailscale fallback")
+        Log.d(TAG, "3 consecutive failures - evaluating Tailscale fallback")
         consecutiveFailures = 0
         evaluateAndSwitchUrl(ctx)
     }
 
-    // ── UDP beacon — auto-discovers PC's LAN and Tailscale IPs ───────────────
+    // ── UDP beacon - auto-discovers PC's LAN and Tailscale IPs ───────────────
 
     private fun startUdpDiscovery(ctx: Context) {
         scope.launch {
@@ -302,7 +302,7 @@ object AethelHookWebSocket {
                     if (!msg.startsWith("AETHELHOOK:")) continue
 
                     // Beacon format: "AETHELHOOK:{port}" or "AETHELHOOK:{port}:{tailscaleIp}"
-                    // No token — the token is only ever handed out via QR pairing (/pair/claim).
+                    // No token - the token is only ever handed out via QR pairing (/pair/claim).
                     val parts        = msg.removePrefix("AETHELHOOK:").trim().split(":")
                     val port         = parts.getOrNull(0)?.toIntOrNull() ?: 5264
                     val tailscaleIp  = parts.getOrNull(1)?.takeIf { it.startsWith("100.") }
@@ -312,7 +312,7 @@ object AethelHookWebSocket {
                     // Only accept a new sender if lan_ip is empty (first-time setup).
                     val currentLanIp = AppPrefs.getLanIp(ctx)
                     if (currentLanIp.isNotEmpty() && senderIp != currentLanIp) {
-                        Log.d(TAG, "Beacon from $senderIp ignored — locked to $currentLanIp")
+                        Log.d(TAG, "Beacon from $senderIp ignored - locked to $currentLanIp")
                         continue
                     }
 
@@ -531,7 +531,7 @@ object AethelHookWebSocket {
 
         val notificationId = System.currentTimeMillis().toInt()
 
-        // Tap-to-open only — no quick-action buttons, multi-choice needs the full screen.
+        // Tap-to-open only - no quick-action buttons, multi-choice needs the full screen.
         val openIntent = Intent(ctx, QuestionActivity::class.java).apply {
             flags = Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP
             putExtra("session_id",     sessionId)
@@ -577,7 +577,7 @@ object AethelHookWebSocket {
 
         val notificationId = System.currentTimeMillis().toInt()
 
-        // Tap-to-open only — reading the full plan needs the full screen.
+        // Tap-to-open only - reading the full plan needs the full screen.
         val openIntent = Intent(ctx, PlanReviewActivity::class.java).apply {
             flags = Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP
             putExtra("session_id",   sessionId)

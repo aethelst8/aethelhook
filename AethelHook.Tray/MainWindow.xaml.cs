@@ -51,7 +51,7 @@ public partial class MainWindow : Window
         _feedTimer = new DispatcherTimer { Interval = TimeSpan.FromSeconds(2) };
         _feedTimer.Tick += async (_, _) => await RefreshFeedAsync();
 
-        // IsVisibleChanged (not Loaded) — Loaded only fires the very first time the
+        // IsVisibleChanged (not Loaded) - Loaded only fires the very first time the
         // window is shown. Show()-ing a previously-hidden window (tray icon click
         // after the X button hid it) does not re-fire Loaded, which would otherwise
         // leave the timers stopped and the UI frozen on stale data.
@@ -72,7 +72,7 @@ public partial class MainWindow : Window
             }
         };
 
-        // Closing the window (X button) just hides it — the app keeps running in the
+        // Closing the window (X button) just hides it - the app keeps running in the
         // tray. Only the tray menu's "Exit" actually shuts down.
         Closing += (_, e) =>
         {
@@ -145,7 +145,7 @@ public partial class MainWindow : Window
         if (_suppressToggleEvent) return;
         var wantActive = GatewayToggle.IsChecked == true;
         GatewayToggle.IsEnabled = false;
-        GatewayToggle.Content = wantActive ? "ON" : "OFF"; // optimistic — RefreshStatusAsync below confirms/corrects it
+        GatewayToggle.Content = wantActive ? "ON" : "OFF"; // optimistic - RefreshStatusAsync below confirms/corrects it
         await _client.SetGatewayActiveAsync(wantActive);
         await RefreshStatusAsync();
     }

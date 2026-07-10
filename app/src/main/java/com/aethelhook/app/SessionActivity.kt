@@ -360,7 +360,7 @@ private fun SessionChatScreen(ctx: Context, project: ProjectInfo, onBack: () -> 
     }
 
     Column(modifier = Modifier.fillMaxSize()) {
-        // Header — back arrow to the Sessions list, project name, agent toggle.
+        // Header - back arrow to the Sessions list, project name, agent toggle.
         Row(
             modifier = Modifier.fillMaxWidth().statusBarsPadding().padding(horizontal = 8.dp, vertical = 8.dp),
             verticalAlignment = Alignment.CenterVertically,
@@ -399,7 +399,7 @@ private fun SessionChatScreen(ctx: Context, project: ProjectInfo, onBack: () -> 
             }
         }
 
-        // Chat timeline — fills all remaining space.
+        // Chat timeline - fills all remaining space.
         LazyColumn(
             state = listState,
             modifier = Modifier.weight(1f).fillMaxWidth(),
@@ -410,7 +410,7 @@ private fun SessionChatScreen(ctx: Context, project: ProjectInfo, onBack: () -> 
                 item {
                     Box(modifier = Modifier.fillMaxWidth().padding(top = 40.dp), contentAlignment = Alignment.Center) {
                         Text(
-                            "Send a prompt to get started — replies and progress will appear here.",
+                            "Send a prompt to get started - replies and progress will appear here.",
                             color = c.textMuted, fontSize = 13.sp
                         )
                     }
@@ -429,7 +429,7 @@ private fun SessionChatScreen(ctx: Context, project: ProjectInfo, onBack: () -> 
             )
         }
 
-        // Pinned input row — text field + small circular send button, no wasted space.
+        // Pinned input row - text field + small circular send button, no wasted space.
         Row(
             modifier = Modifier
                 .fillMaxWidth()

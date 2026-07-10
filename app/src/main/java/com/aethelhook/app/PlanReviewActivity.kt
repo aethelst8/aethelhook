@@ -85,7 +85,7 @@ private sealed class PlanFetchResult {
     object Malformed : PlanFetchResult()
 }
 
-// Fetches { "plan": "..." }, trying each candidate URL in order — first reachable one wins.
+// Fetches { "plan": "..." }, trying each candidate URL in order - first reachable one wins.
 private suspend fun fetchPlan(ctx: Context, planUrls: List<String>, token: String): PlanFetchResult = withContext(Dispatchers.IO) {
     if (planUrls.isEmpty()) return@withContext PlanFetchResult.NetworkError
     var sawNotFound = false
@@ -167,7 +167,7 @@ fun PlanReviewScreen(
 
     LaunchedEffect(retryTrigger) {
         fetchState = if (retryTrigger == 0 && !planTextInline.isNullOrBlank()) {
-            // Plan arrived inline over WebSocket — no fetch needed at all.
+            // Plan arrived inline over WebSocket - no fetch needed at all.
             PlanFetchResult.Success(planTextInline)
         } else {
             fetchPlan(ctx, planUrls, AppPrefs.getApiToken(ctx))
@@ -285,12 +285,12 @@ private fun PlanLoadingCard() {
 
 private fun planLoadErrorMessage(result: PlanFetchResult): String = when (result) {
     is PlanFetchResult.NotFound ->
-        "This plan is no longer available on the PC — it may have already been resolved. Approve/reject from the PC instead."
+        "This plan is no longer available on the PC - it may have already been resolved. Approve/reject from the PC instead."
     is PlanFetchResult.NetworkError ->
-        "Can't reach the PC right now — check your Wi-Fi/Tailscale connection, or approve/reject from the PC instead."
+        "Can't reach the PC right now - check your Wi-Fi/Tailscale connection, or approve/reject from the PC instead."
     is PlanFetchResult.Malformed ->
         "Got an unexpected response from the PC. Approve/reject from the PC instead."
-    is PlanFetchResult.Success -> "" // unreachable — Success renders PlanTextCard instead
+    is PlanFetchResult.Success -> "" // unreachable - Success renders PlanTextCard instead
 }
 
 @Composable

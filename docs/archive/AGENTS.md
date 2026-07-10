@@ -1,10 +1,10 @@
 > **ARCHIVED (2026-07-06):** superseded by `CLAUDE.md` at the repo root. Describes an
-> early architecture (wrong file paths, a SQLite store no longer used) — kept for
+> early architecture (wrong file paths, a SQLite store no longer used) - kept for
 > history only, moved from `.agents\AGENTS.md`.
 
 # AethelHook Workspace Instructions
 
-You are working on **AethelHook** — a system where an Android phone is the primary approval gateway for every write/execute tool call the Antigravity agent makes, replacing or supplementing the IDE's built-in permission dialogs.
+You are working on **AethelHook** - a system where an Android phone is the primary approval gateway for every write/execute tool call the Antigravity agent makes, replacing or supplementing the IDE's built-in permission dialogs.
 
 ---
 

@@ -43,7 +43,7 @@ New-Service -Name $ServiceName `
 Write-Host "Starting service..." -ForegroundColor Yellow
 Start-Service -Name $ServiceName
 
-# 6. Publish the tray app (kill it first — it's a desktop-session process, not the
+# 6. Publish the tray app (kill it first - it's a desktop-session process, not the
 #    service, so it isn't stopped by anything above and would lock the install dir)
 Write-Host "Stopping tray app (if running)..." -ForegroundColor Yellow
 Get-Process -Name "AethelHook.Tray" -ErrorAction SilentlyContinue | Stop-Process -Force

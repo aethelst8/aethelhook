@@ -10,7 +10,7 @@ function Log($msg) {
 
 Log "Agent-done hook fired"
 
-# Read stdin — Antigravity may provide transcript_path or output
+# Read stdin - Antigravity may provide transcript_path or output
 $transcriptPath = $null
 try {
     $stdinReader = [System.IO.StreamReader]::new([Console]::OpenStandardInput(), [System.Text.Encoding]::UTF8)

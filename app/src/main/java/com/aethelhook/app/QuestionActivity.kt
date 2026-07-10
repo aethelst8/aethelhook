@@ -248,7 +248,7 @@ private fun QuestionCard(question: QuestionUi, state: QuestionAnswerState) {
                         }
                     )
                 }
-                // "Other" — always available, matches AskUserQuestion's native semantics.
+                // "Other" - always available, matches AskUserQuestion's native semantics.
                 OptionRow(
                     label       = "Other",
                     description = "Type a custom answer",

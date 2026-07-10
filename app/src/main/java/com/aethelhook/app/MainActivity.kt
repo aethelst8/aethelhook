@@ -404,14 +404,14 @@ fun DashboardScreen(ctx: Context, isDark: Boolean, onToggleTheme: () -> Unit) {
                 val statusSub = when {
                     !anyGatewayEnabled -> "Toggle a gateway ON to enable phone approvals"
                     lanIpNow.isBlank() && tsIpNow.isBlank()
-                                      -> "Open Settings — connect to the same Wi-Fi as your PC to auto-discover"
+                                      -> "Open Settings - connect to the same Wi-Fi as your PC to auto-discover"
                     apiStatus == true -> when (connType) {
                         AethelHookWebSocket.ConnectionType.LAN       -> "LAN · ${maskMiddle(lanIpNow)}"
                         AethelHookWebSocket.ConnectionType.TAILSCALE -> "Tailscale · ${maskMiddle(tsIpNow)}"
                         else                                          -> maskIpInText(apiUrl)
                     }
                     apiStatus == false -> when {
-                        lanIpNow.isBlank() -> "No LAN IP yet — ensure PC is on the same Wi-Fi"
+                        lanIpNow.isBlank() -> "No LAN IP yet - ensure PC is on the same Wi-Fi"
                         else               -> "Cannot reach ${maskIpInText(apiUrl)}"
                     }
                     else -> "Checking connection..."
@@ -442,7 +442,7 @@ fun DashboardScreen(ctx: Context, isDark: Boolean, onToggleTheme: () -> Unit) {
                 ) {
                     Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
                         Text(
-                            if (gatewayEnabled) "Claude Code — Active" else "Claude Code — Inactive",
+                            if (gatewayEnabled) "Claude Code - Active" else "Claude Code - Inactive",
                             color = c.textPrimary, fontSize = 14.sp, fontWeight = FontWeight.Medium
                         )
                         Text(
@@ -506,7 +506,7 @@ fun DashboardScreen(ctx: Context, isDark: Boolean, onToggleTheme: () -> Unit) {
                 ) {
                     Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
                         Text(
-                            if (codexGatewayEnabled) "Codex — Active" else "Codex — Inactive",
+                            if (codexGatewayEnabled) "Codex - Active" else "Codex - Inactive",
                             color = c.textPrimary, fontSize = 14.sp, fontWeight = FontWeight.Medium
                         )
                         Text(
@@ -548,7 +548,7 @@ fun DashboardScreen(ctx: Context, isDark: Boolean, onToggleTheme: () -> Unit) {
             }
         }
 
-        // Stats row — counters are persistent and not capped by history list size
+        // Stats row - counters are persistent and not capped by history list size
         Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
             StatChip(Modifier.weight(1f), totalCount.toString(),    "Total",    c.accentCyan,  Icons.Default.Add)
             StatChip(Modifier.weight(1f), approvedCount.toString(), "Approved", c.accentGreen, Icons.Default.Done,
@@ -603,7 +603,7 @@ fun DashboardScreen(ctx: Context, isDark: Boolean, onToggleTheme: () -> Unit) {
         }
     }
 
-    // Stats detail popup — renders in its own window above everything
+    // Stats detail popup - renders in its own window above everything
     if (statsPopupFilter != null) {
         StatsDetailPopup(
             filter       = statsPopupFilter!!,
@@ -759,7 +759,7 @@ fun HistoryCard(record: ApprovalRecord, fmt: SimpleDateFormat) {
                 }
             }
 
-            // Preview — collapses to 2 lines, expands to full command
+            // Preview - collapses to 2 lines, expands to full command
             Spacer(Modifier.height(6.dp))
             Text(
                 text = record.preview,
@@ -941,7 +941,7 @@ fun SettingsScreen(ctx: Context, isDark: Boolean, onToggleTheme: () -> Unit) {
                 SensitiveTextField(
                     value = tailscaleIp,
                     onValueChange = { v -> if (v.all { it.isDigit() || it == '.' }) { tailscaleIp = v; saved = false } },
-                    label = "Tailscale IP  (mobile data — enter once)",
+                    label = "Tailscale IP  (mobile data - enter once)",
                     placeholder = "100.x.x.x",
                     keyboardType = KeyboardType.Number,
                     icon = Icons.Default.Link,
@@ -1078,7 +1078,7 @@ fun LiquidGlassCard(
             )
             .then(if (onClick != null) Modifier.clickable { onClick() } else Modifier)
     ) {
-        // Inner specular highlight — simulates light hitting the top edge of the glass
+        // Inner specular highlight - simulates light hitting the top edge of the glass
         Box(
             modifier = Modifier
                 .fillMaxWidth()
@@ -1267,7 +1267,7 @@ fun InfoRow(label: String, value: String) {
 }
 
 // ──────────────────────────────────────────────────────────────────────────────
-// Agent summary popup — shown when user taps a "finished working" notification
+// Agent summary popup - shown when user taps a "finished working" notification
 // ──────────────────────────────────────────────────────────────────────────────
 
 // Parsed segments of a markdown body (plain text vs. tables)
@@ -1320,7 +1320,7 @@ private fun MdTable(table: MdSegment.Table) {
             .border(1.dp, c.divider.copy(alpha = 0.35f), RoundedCornerShape(8.dp))
             .clip(RoundedCornerShape(8.dp))
     ) {
-        // Header row — weight(1f) per cell keeps all columns the same width
+        // Header row - weight(1f) per cell keeps all columns the same width
         Row(
             modifier = Modifier
                 .fillMaxWidth()
@@ -1485,7 +1485,7 @@ fun SummaryPopup(title: String, body: String, onDismiss: () -> Unit) {
                         HorizontalDivider(color = c.divider.copy(alpha = 0.30f))
                         Spacer(Modifier.height(12.dp))
 
-                        // Scrollable body — with a visible thumb scrollbar drawn alongside
+                        // Scrollable body - with a visible thumb scrollbar drawn alongside
                         val scrollState = rememberScrollState()
                         val scrollOffset = scrollState.value  // observed here → redraws thumb on scroll
                         val isDark = c.isDark

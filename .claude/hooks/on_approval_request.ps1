@@ -155,7 +155,7 @@ try {
 } catch {
     $httpResponse = $_.Exception.Response
     if ($httpResponse) {
-        # API is reachable but returned an HTTP error — do NOT self-destruct, just log and block this call
+        # API is reachable but returned an HTTP error - do NOT self-destruct, just log and block this call
         $statusCode = [int]$httpResponse.StatusCode
         try {
             $errStream = $httpResponse.GetResponseStream()
@@ -174,7 +174,7 @@ try {
         exit 2
     }
 
-    # No response at all — API is genuinely offline — self-destruct to restore native dialogs
+    # No response at all - API is genuinely offline - self-destruct to restore native dialogs
     Log "API unreachable (no response) - removing AethelHook hooks to restore native Claude dialogs: $_"
 
     $settingsPath = "$env:USERPROFILE\.claude\settings.json"

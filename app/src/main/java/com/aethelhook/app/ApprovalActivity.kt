@@ -66,7 +66,7 @@ class ApprovalActivity : ComponentActivity() {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Decision enum — maps to API decision strings
+// Decision enum - maps to API decision strings
 // ─────────────────────────────────────────────────────────────────────────────
 
 enum class ApprovalChoice {
@@ -158,7 +158,7 @@ fun ApprovalScreen(
         GlassBackground()
 
         Column(modifier = Modifier.fillMaxSize()) {
-            // Scrollable content area — leaves room for floating bar
+            // Scrollable content area - leaves room for floating bar
             Column(
                 modifier = Modifier
                     .weight(1f)
@@ -191,7 +191,7 @@ fun ApprovalScreen(
                 )
             }
 
-            // Floating action bar — always visible at bottom
+            // Floating action bar - always visible at bottom
             FloatingApprovalBar(
                 allowLabel = allowLabel,
                 denyLabel  = denyLabel,
@@ -421,7 +421,7 @@ fun AdvancedOptionsSection(
                     AdvancedOptionRow(
                         choice   = ApprovalChoice.NO_WITH_REASON,
                         icon     = Icons.Default.Info,
-                        label    = "Deny — but tell agent what to do instead",
+                        label    = "Deny - but tell agent what to do instead",
                         color    = c.accentAmber,
                         selected = advancedChoice == ApprovalChoice.NO_WITH_REASON,
                         onClick  = { onChoiceSelect(ApprovalChoice.NO_WITH_REASON) }

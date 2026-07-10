@@ -56,12 +56,12 @@ object AppPrefs {
         }
     }
 
-    // Network config — stored as IPs, URLs are derived
+    // Network config - stored as IPs, URLs are derived
     private const val KEY_LAN_IP       = "lan_ip"
     private const val KEY_TAILSCALE_IP = "tailscale_ip"
     private const val KEY_PORT         = "port"
 
-    // Active URL — managed by the network monitor, not set directly by the user
+    // Active URL - managed by the network monitor, not set directly by the user
     private const val KEY_API_URL = "api_url"
 
     private const val KEY_TIMEOUT                = "timeout_sec"
@@ -72,12 +72,12 @@ object AppPrefs {
     private const val KEY_API_TOKEN              = "api_token"
     private const val KEY_CERT_FINGERPRINT       = "cert_fingerprint"
 
-    // Persistent counters — not capped by history list size
+    // Persistent counters - not capped by history list size
     private const val KEY_TOTAL_COUNT    = "stat_total"
     private const val KEY_APPROVED_COUNT = "stat_approved"
     private const val KEY_DENIED_COUNT   = "stat_denied"
 
-    // Auto-clear — epoch day (ms / 86400000) of last history wipe
+    // Auto-clear - epoch day (ms / 86400000) of last history wipe
     private const val KEY_LAST_CLEAR_DAY = "last_clear_day"
     private const val KEY_LAST_AGENT       = "last_agent"
 
@@ -248,7 +248,7 @@ object AppPrefs {
     fun setCodexGatewayEnabled(ctx: Context, enabled: Boolean) =
         securePrefs(ctx).edit { putBoolean(KEY_CODEX_GATEWAY_ENABLED, enabled) }
 
-    // ── API token (shared secret — auto-populated from UDP beacon) ────────────
+    // ── API token (shared secret - auto-populated from UDP beacon) ────────────
 
     fun getApiToken(ctx: Context): String =
         securePrefs(ctx)
@@ -258,7 +258,7 @@ object AppPrefs {
         securePrefs(ctx).edit { putString(KEY_API_TOKEN, token) }
 
     // ── Pinned HTTPS cert fingerprint (SHA-256 hex, received via the QR pairing
-    // payload's `c` field — not from the PC over the network, since the QR scan
+    // payload's `c` field - not from the PC over the network, since the QR scan
     // itself is the trust root here, not a certificate authority) ──────────────
 
     fun getCertFingerprint(ctx: Context): String =

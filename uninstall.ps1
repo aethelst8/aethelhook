@@ -77,11 +77,11 @@ if (Test-Path $ClaudeSettings) {
         $settings | ConvertTo-Json -Depth 10 | Out-File $ClaudeSettings -Encoding utf8NoBOM -Force
         Write-Host "Claude Code settings restored. Native dialogs will reappear." -ForegroundColor Green
     } catch {
-        Write-Host "  Warning: could not update $ClaudeSettings — $_" -ForegroundColor Yellow
+        Write-Host "  Warning: could not update $ClaudeSettings - $_" -ForegroundColor Yellow
         Write-Host "  Remove the 'hooks' block manually to restore native dialogs." -ForegroundColor Yellow
     }
 } else {
-    Write-Host "Claude Code settings.json not found — nothing to restore." -ForegroundColor Yellow
+    Write-Host "Claude Code settings.json not found - nothing to restore." -ForegroundColor Yellow
 }
 
 Write-Host ""

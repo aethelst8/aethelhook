@@ -58,7 +58,7 @@ class DecisionBroadcastReceiver : BroadcastReceiver() {
 
         if (notifId != -1) NotificationManagerCompat.from(context).cancel(notifId)
 
-        // WebSocket is the primary path — works even when phone is the hotspot provider
+        // WebSocket is the primary path - works even when phone is the hotspot provider
         // (the socket is bound to the hotspot interface, bypassing cellular routing).
         if (AethelHookWebSocket.isConnected) {
             AethelHookWebSocket.sendDecision(sessionId, decision)

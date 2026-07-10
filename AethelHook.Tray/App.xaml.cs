@@ -17,7 +17,7 @@ public partial class App : System.Windows.Application
     {
         base.OnStartup(e);
 
-        // Only one tray icon per machine — a second launch (e.g. manual double-click
+        // Only one tray icon per machine - a second launch (e.g. manual double-click
         // after the Startup-folder shortcut already ran) should just no-op.
         _singleInstanceMutex = new Mutex(initiallyOwned: true, "Global\\AethelHook.Tray.SingleInstance", out var isNew);
         if (!isNew)
@@ -28,7 +28,7 @@ public partial class App : System.Windows.Application
 
         _trayIcon = (TaskbarIcon)FindResource("TrayIcon");
         // Loaded via GDI+ from the exe's own embedded icon (ApplicationIcon), not
-        // WPF's pack-URI BitmapDecoder — WPF's built-in ICO decoder chokes on some
+        // WPF's pack-URI BitmapDecoder - WPF's built-in ICO decoder chokes on some
         // frames of this particular multi-size .ico; GDI+ handles it fine.
         _trayIcon.Icon = System.Drawing.Icon.ExtractAssociatedIcon(System.Reflection.Assembly.GetExecutingAssembly().Location);
         _trayIcon.ForceCreate();
@@ -60,7 +60,7 @@ public partial class App : System.Windows.Application
         _trayIcon?.Dispose();
         if (_singleInstanceMutex != null)
         {
-            try { _singleInstanceMutex.ReleaseMutex(); } catch (ApplicationException) { /* not owned — already released */ }
+            try { _singleInstanceMutex.ReleaseMutex(); } catch (ApplicationException) { /* not owned - already released */ }
             _singleInstanceMutex.Dispose();
         }
         base.OnExit(e);

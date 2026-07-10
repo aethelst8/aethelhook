@@ -10,7 +10,7 @@
 .cxx
 local.properties
 
-# Credentials — never commit these
+# Credentials - never commit these
 *firebase-adminsdk*.json
 *serviceAccountKey*.json
 google-services.json

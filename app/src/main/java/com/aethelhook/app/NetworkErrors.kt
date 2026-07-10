@@ -22,7 +22,7 @@ fun friendlyHttpError(code: Int, rawBody: String?, agentLabel: String): String {
 
     return when (code) {
         401 -> "This phone isn't paired with your PC anymore. Re-pair it from Settings."
-        400 -> "That message couldn't be sent — please try again."
+        400 -> "That message couldn't be sent - please try again."
         in 500..599 -> "$agentLabel couldn't run on your PC. Make sure it's installed and AethelHook can find it."
         else -> "Failed to send (HTTP $code)"
     }

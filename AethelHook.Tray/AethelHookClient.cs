@@ -12,7 +12,7 @@ using System.Threading.Tasks;
 namespace AethelHook.Tray;
 
 // /hook/status is the one endpoint that uses snake_case field names (unlike every
-// other endpoint here, which is camelCase) — PropertyNameCaseInsensitive doesn't
+// other endpoint here, which is camelCase) - PropertyNameCaseInsensitive doesn't
 // bridge "ws_connected" to "WsConnected" since the underscore makes them genuinely
 // different strings, not just different casing. Map explicitly instead of relying
 // on convention, which silently left both booleans defaulted to false.
@@ -24,7 +24,7 @@ public record DeviceInfo(string Id, string Token, string Label, DateTime PairedA
 public record FeedItem(string SessionId, string ToolName, string CommandName, string Detail, DateTime CreatedAt, string? Decision, DateTime? DecidedAt);
 public record PairSession(string Sid, int ExpiresInSec);
 
-// Thin HTTP client for the AethelHook API. Always talks to localhost — the tray app
+// Thin HTTP client for the AethelHook API. Always talks to localhost - the tray app
 // only ever runs on the same machine as the service, so there's no LAN/Tailscale
 // discovery to do (that's the phone app's problem, not this one's).
 public class AethelHookClient
@@ -64,7 +64,7 @@ public class AethelHookClient
                     return;
                 }
             }
-            catch { /* corrupt/missing cache — fall through and re-bootstrap */ }
+            catch { /* corrupt/missing cache - fall through and re-bootstrap */ }
         }
 
         var resp = await _http.PostAsync("/pair/local-token", content: null, ct);
@@ -83,7 +83,7 @@ public class AethelHookClient
         return req;
     }
 
-    // Public, unauthenticated heartbeat — safe to poll frequently even before a
+    // Public, unauthenticated heartbeat - safe to poll frequently even before a
     // token has been bootstrapped.
     public async Task<HookStatus?> GetStatusAsync(CancellationToken ct = default)
     {
@@ -103,7 +103,7 @@ public class AethelHookClient
         catch { return false; }
     }
 
-    // Loopback-gated, no token required — same as the browser pairing page.
+    // Loopback-gated, no token required - same as the browser pairing page.
     public async Task<List<DeviceInfo>> GetDevicesAsync(CancellationToken ct = default)
     {
         try { return await _http.GetFromJsonAsync<List<DeviceInfo>>("/pair/devices", JsonOpts, ct) ?? new(); }
