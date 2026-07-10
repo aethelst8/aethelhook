@@ -10,6 +10,37 @@ function Log($msg) {
 }
 Log "--- Approval Request Hook Triggered ---"
 
+# WebSearch/WebFetch, like AskUserQuestion and ExitPlanMode before them, show a native
+# Claude Code confirmation dialog regardless of this hook's exit code/decision (same
+# "hook decision no longer suppresses the native UI" behavior as gotcha #13's
+# AskUserQuestion/ExitPlanMode fix) - confirmed live: the hook fires, posts to the API,
+# and gets a real phone decision back, but the native "Allow searching for this query?"
+# dialog (1 Yes / 2 Yes, allow for this project / 3 No / free-text "Tell Claude what to
+# do instead") still renders. That dialog's shape is identical to the ExitPlanMode
+# dialog send_plan_key.ps1 already drives (digit-key press, Tab-then-type for the
+# free-text case), so it's reused here rather than duplicated. NOT yet live-verified
+# that digit keys are actually what this specific dialog listens for (unlike
+# ExitPlanMode's send_plan_key.ps1 usage, confirmed via live testing) - try it and
+# adjust if the dialog doesn't dismiss in sync with the phone decision.
+function Send-NativeDialogKeyIfNeeded([string]$key, [string]$feedback = "") {
+    if ($toolName -notin @("WebSearch", "WebFetch")) { return }
+
+    $workspaceName = if ($inputData.cwd) { Split-Path $inputData.cwd -Leaf } else { "AethelHook" }
+
+    $feedbackFile = ""
+    if ($feedback) {
+        $feedbackFile = [System.IO.Path]::GetTempFileName()
+        Set-Content -Path $feedbackFile -Value $feedback -Encoding UTF8 -NoNewline
+    }
+
+    Log "Launching send_plan_key.ps1 for native $toolName dialog (Key=$key)"
+    Start-Process powershell.exe -WindowStyle Hidden -ArgumentList @(
+        "-NoProfile", "-ExecutionPolicy", "Bypass", "-File",
+        (Join-Path $PSScriptRoot "send_plan_key.ps1"), "-Key", $key, "-FeedbackFile", $feedbackFile,
+        "-WorkspaceName", "`"$workspaceName`""
+    )
+}
+
 # Read tool input from stdin
 $inputData = $null
 try {
@@ -192,21 +223,27 @@ Log "Internal decision: $internalDecision"
 switch ($internalDecision) {
     { $_ -in "allow", "allow_once" } {
         Log "Allowed"
+        Send-NativeDialogKeyIfNeeded "1"
         exit 0
     }
     { $_ -in "always_allow_project", "always_allow_global" } {
         "$fullCommand" | Out-File -FilePath $phoneAllowPath -Append -ErrorAction SilentlyContinue
         Log "Added '$fullCommand' to phone allow list"
+        # The native dialog only offers a project-scoped "always allow", no global
+        # equivalent - closest available action either way.
+        Send-NativeDialogKeyIfNeeded "2"
         exit 0
     }
     "deny_with_reason" {
         $reason = if ($internalReason) { $internalReason } else { "User declined via phone" }
         Log "Denied with reason: $reason"
+        Send-NativeDialogKeyIfNeeded "3" $reason
         Write-Output (@{ decision = "block"; reason = $reason } | ConvertTo-Json -Compress)
         exit 2
     }
     "deny" {
         Log "Denied"
+        Send-NativeDialogKeyIfNeeded "3"
         Write-Output '{"decision":"block","reason":"Denied via phone"}'
         exit 2
     }
