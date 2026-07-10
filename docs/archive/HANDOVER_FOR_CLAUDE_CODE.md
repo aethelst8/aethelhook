@@ -1,8 +1,8 @@
 > **ARCHIVED (2026-07-06):** superseded by `CLAUDE.md` at the repo root. This describes
 > an early Antigravity-only architecture (pre-Claude Code integration, pre-QR pairing,
-> pre-Phase 2) and is kept for history only — do not treat as current.
+> pre-Phase 2) and is kept for history only - do not treat as current.
 
-# AethelHook — Complete Handover Document for Claude Code
+# AethelHook - Complete Handover Document for Claude Code
 
 > **IMPORTANT:** You are picking up a project that has been in active development. Read this entire document before touching anything. The project is functional in concept, the infrastructure is built, but there is one remaining issue blocking the live test. The fix is known and documented below.
 
@@ -58,13 +58,13 @@ Antigravity IDE: command runs or is blocked
 | `C:\AethelHook\AethelHook.API\firebase-service-account.json` | FCM service account credentials |
 | `C:\AethelHook\AethelHook.API\Properties\launchSettings.json` | Launch config (port 5264) |
 | `C:\AethelHook\AethelHookApp\` | Android app (Kotlin / Jetpack Compose) |
-| `C:\AethelHook\.gemini\hooks\on_approval_request.ps1` | **The hook script** — fires on every PreToolUse event |
+| `C:\AethelHook\.gemini\hooks\on_approval_request.ps1` | **The hook script** - fires on every PreToolUse event |
 | `C:\AethelHook\.gemini\hooks\on_task_complete.ps1` | Session end hook (notifies phone when agent finishes) |
-| `C:\AethelHook\.gemini\hooks.json` | **Hook registration** — Antigravity reads THIS file |
-| `C:\AethelHook\.agents\hooks.json` | Old/duplicate hooks config (NOT read by Antigravity — ignore) |
+| `C:\AethelHook\.gemini\hooks.json` | **Hook registration** - Antigravity reads THIS file |
+| `C:\AethelHook\.agents\hooks.json` | Old/duplicate hooks config (NOT read by Antigravity - ignore) |
 | `C:\AethelHook\.agents\settings.json` | Project permission settings (wildcards removed) |
 | `C:\AethelHook\.agents\AGENTS.md` | Workspace rules (auto-loaded by any new agent) |
-| `C:\AethelHook\hook_debug.log` | Hook execution log — your primary debug tool |
+| `C:\AethelHook\hook_debug.log` | Hook execution log - your primary debug tool |
 | `C:\Users\Moloi\.gemini\settings.json` | Global Antigravity settings (wildcards removed) |
 | `C:\Users\Moloi\.gemini\config\projects\877e3233-7f8c-4d86-9c2f-590ded0b4ae5.json` | Project-specific allow list (command entries removed) |
 
@@ -87,10 +87,10 @@ dotnet run --project C:\AethelHook\AethelHook.API\AethelHook.API.csproj --urls "
 | GET | `/ws` | WebSocket endpoint. Android app connects here for real-time push. |
 
 ### Decision Values (from phone)
-- `allow_once` — run the command this time
-- `always_allow_project` — run + add to phone allow list (no more notifications for this command)
-- `deny` — block the command, auto-click Skip in IDE dialog
-- `deny_with_reason` — block + send a custom reason string to the agent
+- `allow_once` - run the command this time
+- `always_allow_project` - run + add to phone allow list (no more notifications for this command)
+- `deny` - block the command, auto-click Skip in IDE dialog
+- `deny_with_reason` - block + send a custom reason string to the agent
 
 ### FCM
 - Firebase Cloud Messaging is used as fallback when the phone's WebSocket is disconnected.
@@ -105,9 +105,9 @@ Located at `C:\AethelHook\.gemini\hooks\on_approval_request.ps1`.
 
 ### Flow
 1. Logs `--- Approval Request Hook Triggered ---` to `hook_debug.log`
-2. Reads tool call JSON from stdin (3s timeout — `run_command` may not send EOF)
+2. Reads tool call JSON from stdin (3s timeout - `run_command` may not send EOF)
 3. Extracts `toolName` and `commandPreview` (the `CommandLine` arg)
-4. Checks `C:\AethelHook\.agents\phone_allow.txt` — if command is listed, auto-approves silently (no notification)
+4. Checks `C:\AethelHook\.agents\phone_allow.txt` - if command is listed, auto-approves silently (no notification)
 5. POSTs to `http://localhost:5264/hook/event` with a unique `sessionId`
 6. Long-polls `http://localhost:5264/hook/wait-decision/{sessionId}` for up to 80s
 7. When decision arrives, uses Windows SendKeys to auto-dismiss the IDE dialog:
@@ -118,7 +118,7 @@ Located at `C:\AethelHook\.gemini\hooks\on_approval_request.ps1`.
 8. Outputs JSON `{"hookSpecificOutput":{"permissionDecision":"allow"}}` or `"deny"` to stdout
 
 ### Phone Allow List
-`C:\AethelHook\.agents\phone_allow.txt` — one command name per line (just the first word, e.g. `dotnet`, `git`).
+`C:\AethelHook\.agents\phone_allow.txt` - one command name per line (just the first word, e.g. `dotnet`, `git`).
 Commands in this list are auto-approved silently without sending a phone notification.
 
 ---
@@ -164,7 +164,7 @@ Current content of `C:\AethelHook\.gemini\hooks.json`:
 
 ---
 
-## 7. Permission System — What We Learned (Critical)
+## 7. Permission System - What We Learned (Critical)
 
 Antigravity has a **3-layer permission system** that bypasses hooks if any layer pre-approves the tool:
 
@@ -232,7 +232,7 @@ echo '...' | powershell.exe -ExecutionPolicy Bypass -File on_approval_request.ps
 ```
 We got **syntax errors** related to curly braces in `Write-Output` strings. However, viewing the file directly showed the syntax looked correct.
 
-The leading theory is that **the IDE had not yet reloaded `hooks.json`** when we ran our tests — hooks are loaded at session startup and changes to `hooks.json` don't take effect until the IDE restarts.
+The leading theory is that **the IDE had not yet reloaded `hooks.json`** when we ran our tests - hooks are loaded at session startup and changes to `hooks.json` don't take effect until the IDE restarts.
 
 The user **has just restarted the IDE** before handing over to you, so the new `hooks.json` with `run_command` matchers should now be loaded.
 
@@ -305,15 +305,15 @@ Invoke-RestMethod -Uri "http://localhost:5264/hook/wait-decision/test-manual-001
 
 ## 11. Known Limitations
 
-1. **"Always allow" breaks the hook** — If the user clicks option 2 ("Yes, and always allow in this project") in any IDE dialog during a session, that command prefix gets added to the project config and will bypass the hook from then on. Must be manually cleaned.
+1. **"Always allow" breaks the hook** - If the user clicks option 2 ("Yes, and always allow in this project") in any IDE dialog during a session, that command prefix gets added to the project config and will bypass the hook from then on. Must be manually cleaned.
 
-2. **Session-cached permissions** — Changes to `settings.json` or `hooks.json` only take effect after an IDE restart. Changes to the project config JSON file take effect immediately (it is read fresh each time).
+2. **Session-cached permissions** - Changes to `settings.json` or `hooks.json` only take effect after an IDE restart. Changes to the project config JSON file take effect immediately (it is read fresh each time).
 
-3. **Auto-dismiss reliability** — The `SendKeys` approach requires the Antigravity IDE window to be focused. If another window is in front, the keys may land on the wrong window. The hook uses `SetForegroundWindow` + `ShowWindow(SW_RESTORE)` before sending keys.
+3. **Auto-dismiss reliability** - The `SendKeys` approach requires the Antigravity IDE window to be focused. If another window is in front, the keys may land on the wrong window. The hook uses `SetForegroundWindow` + `ShowWindow(SW_RESTORE)` before sending keys.
 
-4. **Hook only covers 4 tools** — `run_command`, `write_file`, `replace_file_content`, `multi_replace_file_content`. Other tools like `search_web`, `read_url_content`, etc. are not hooked.
+4. **Hook only covers 4 tools** - `run_command`, `write_file`, `replace_file_content`, `multi_replace_file_content`. Other tools like `search_web`, `read_url_content`, etc. are not hooked.
 
-5. **API must be running** — If the API is not running when the hook fires, the hook falls through to `ask` mode (IDE dialog handles it normally). This is intentional graceful degradation.
+5. **API must be running** - If the API is not running when the hook fires, the hook falls through to `ask` mode (IDE dialog handles it normally). This is intentional graceful degradation.
 
 ---
 
@@ -330,14 +330,14 @@ Invoke-RestMethod -Uri "http://localhost:5264/hook/wait-decision/test-manual-001
 - Got the full live flow working: hook fires → phone notified → user taps → decision returned → IDE dialog auto-dismissed
 - Documented the permission architecture
 
-### Phase 3 (June 21 — today)
+### Phase 3 (June 21 - today)
 - **Problem:** Hook stopped firing for `run_command`
 - **Investigation:** Found that the hook WAS firing for `multi_replace_file_content` but not for `run_command`
-- **Root cause 1:** `.agents/settings.json` had `"run_command(*)"` wildcard — removed ✅
-- **Root cause 2:** `C:\Users\Moloi\.gemini\settings.json` (global) also had `"run_command(*)"` — removed ✅
-- **Root cause 3:** Project config JSON had `"command(powershell.exe)"` in the allow list (added when user clicked "always allow" during an earlier test) — all `command(...)` entries removed ✅
-- **Root cause 4 (discovered last):** `C:\AethelHook\.gemini\hooks.json` only had `matcher: "ask_permission"` — NOT `run_command`. The `.agents/hooks.json` file with the correct matchers was never being loaded by Antigravity. Fixed by adding all 4 matchers to `.gemini/hooks.json` ✅
-- User restarted IDE — **handover happens here**
+- **Root cause 1:** `.agents/settings.json` had `"run_command(*)"` wildcard - removed ✅
+- **Root cause 2:** `C:\Users\Moloi\.gemini\settings.json` (global) also had `"run_command(*)"` - removed ✅
+- **Root cause 3:** Project config JSON had `"command(powershell.exe)"` in the allow list (added when user clicked "always allow" during an earlier test) - all `command(...)` entries removed ✅
+- **Root cause 4 (discovered last):** `C:\AethelHook\.gemini\hooks.json` only had `matcher: "ask_permission"` - NOT `run_command`. The `.agents/hooks.json` file with the correct matchers was never being loaded by Antigravity. Fixed by adding all 4 matchers to `.gemini/hooks.json` ✅
+- User restarted IDE - **handover happens here**
 
 ---
 
@@ -377,7 +377,7 @@ When fully working:
 1. You (Claude Code) propose `run_command("hostname")`
 2. Antigravity fires `on_approval_request.ps1`
 3. `hook_debug.log` gets a new entry: `--- Approval Request Hook Triggered ---`
-4. The user's Android phone vibrates with a notification: `[run_command] Approve or Decline? — hostname`
+4. The user's Android phone vibrates with a notification: `[run_command] Approve or Decline? - hostname`
 5. The user taps **Approve** on the phone
 6. `hook_debug.log` gets: `Internal decision: allow_once`
 7. The IDE dialog auto-dismisses (SendKeys `1{ENTER}`)

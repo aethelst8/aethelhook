@@ -1,10 +1,10 @@
-﻿# Antigravity Hook System — Definitive Reference
+﻿# Antigravity Hook System - Definitive Reference
 
 > All answers are derived from (a) live stdin payloads captured in `hook_debug.log`, (b) the working `hooks.json` / hook scripts in this workspace, and (c) observed runtime behavior. Nothing here is speculative.
 
 ---
 
-## Q1 — PreToolUse Hook
+## Q1 - PreToolUse Hook
 
 **Yes.** Antigravity has a `PreToolUse` hook event that runs a shell command **synchronously** before any matched tool executes.
 
@@ -12,19 +12,19 @@
 
 The `matcher` field controls which tools trigger the hook. Supported values:
 
-- **Exact tool name** — `"run_command"`, `"write_file"`, `"replace_file_content"`, `"multi_replace_file_content"`, `"ask_permission"`, etc.
-- **Wildcard** — `"*"` matches every tool call (confirmed working; was set during early testing).
-- **Any registered tool name** — includes MCP tools (see Q9).
+- **Exact tool name** - `"run_command"`, `"write_file"`, `"replace_file_content"`, `"multi_replace_file_content"`, `"ask_permission"`, etc.
+- **Wildcard** - `"*"` matches every tool call (confirmed working; was set during early testing).
+- **Any registered tool name** - includes MCP tools (see Q9).
 
 ### Enforcement
 
-**Hard enforcement boundary**, not a soft guardrail. When the hook exits `2` (deny), the tool call is fully blocked — the agent receives an error and cannot retry the same call. There is no bypass path; every matched tool call passes through the hook before execution, including recursive tool calls made by the hook script itself (this caused double-firing during development).
+**Hard enforcement boundary**, not a soft guardrail. When the hook exits `2` (deny), the tool call is fully blocked - the agent receives an error and cannot retry the same call. There is no bypass path; every matched tool call passes through the hook before execution, including recursive tool calls made by the hook script itself (this caused double-firing during development).
 
 > **Known caveat:** The hook fires on the hook's *own* tool calls too if the matcher is `"*"`. Scope your matcher to specific tool names to avoid loops.
 
 ---
 
-## Q2 — Stop / PostTurn Hook
+## Q2 - Stop / PostTurn Hook
 
 **Yes.** Three event names all fire when the agent finishes its turn / returns control to the user:
 
@@ -36,11 +36,11 @@ The `matcher` field controls which tools trigger the hook. Supported values:
 
 All three are registered in the working config and invoke the same `on_task_complete.ps1` script. In practice, **`Stop` is the primary "agent done" event** for a normal conversation turn.
 
-These hooks are **fire-and-forget** — their exit code and stdout are ignored (they cannot block or redirect). A hook that hangs here will hold up the session; keep them short.
+These hooks are **fire-and-forget** - their exit code and stdout are ignored (they cannot block or redirect). A hook that hangs here will hold up the session; keep them short.
 
 ---
 
-## Q3 — Hook Config Format & Location
+## Q3 - Hook Config Format & Location
 
 ### File format
 
@@ -68,7 +68,7 @@ The `hooksPath` redirect in `.gemini\settings.json` lets you point to any JSON f
 { "hooksPath": "C:\\AethelHook\\.agents\\hooks.json" }
 ```
 
-Both the global and project configs are loaded and **merged** — if both define `PreToolUse` matchers, both fire.
+Both the global and project configs are loaded and **merged** - if both define `PreToolUse` matchers, both fire.
 
 ### Minimal working PreToolUse example
 
@@ -96,12 +96,12 @@ Required fields per hook entry:
 | Field | Description |
 |---|---|
 | `"type"` | Always `"command"` |
-| `"command"` | The shell string to execute (run through the system shell, not exec'd directly — see Q10) |
+| `"command"` | The shell string to execute (run through the system shell, not exec'd directly - see Q10) |
 | `"timeout"` | Integer seconds; hook process is killed if it exceeds this |
 
 ---
 
-## Q4 — Stdin JSON Format
+## Q4 - Stdin JSON Format
 
 **Exact structure from live captured payloads:**
 
@@ -127,7 +127,7 @@ Required fields per hook entry:
 
 | Field | Type | Description |
 |---|---|---|
-| `conversationId` | string (UUID) | Unique session/conversation identifier — use this as your session key |
+| `conversationId` | string (UUID) | Unique session/conversation identifier - use this as your session key |
 | `stepIdx` | integer | Turn/step index within the conversation |
 | `toolCall.name` | string | The tool being called, e.g. `"run_command"`, `"write_file"` |
 | `toolCall.args` | object | All arguments passed to the tool |
@@ -153,7 +153,7 @@ Required fields per hook entry:
 
 ---
 
-## Q5 — Block Mechanism (Deny)
+## Q5 - Block Mechanism (Deny)
 
 To block/deny a tool call, your hook must do **both**:
 
@@ -178,11 +178,11 @@ exit 2
 
 ---
 
-## Q6 — Allow Mechanism (Pass-through)
+## Q6 - Allow Mechanism (Pass-through)
 
 Two options:
 
-**Option A — Explicit allow (recommended):**
+**Option A - Explicit allow (recommended):**
 
 ```powershell
 Write-Output '{"hookSpecificOutput":{"permissionDecision":"allow"}}'
@@ -191,7 +191,7 @@ exit 0
 
 This also **suppresses the native IDE permission dialog** (see Q8).
 
-**Option B — Silent pass-through:**
+**Option B - Silent pass-through:**
 
 Exit `0` with no stdout. The engine treats this as "no objection" and proceeds, but the IDE dialog may still appear.
 
@@ -204,7 +204,7 @@ exit 0
 
 ---
 
-## Q7 — Timeout / Hanging Hook
+## Q7 - Timeout / Hanging Hook
 
 - The `"timeout"` field (integer seconds) sets the hard deadline per hook entry.
 - If the hook process does not exit within that time, **the process is killed**.
@@ -216,7 +216,7 @@ exit 0
 
 ---
 
-## Q8 — Native Permission Dialog
+## Q8 - Native Permission Dialog
 
 **Yes**, Antigravity shows its own native IDE permission dialog for tool calls that require user approval (write, execute, etc.).
 
@@ -224,23 +224,23 @@ exit 0
 
 | Hook stdout | Effect on dialog |
 |---|---|
-| `"permissionDecision":"allow"` | Dialog **suppressed** — tool executes immediately |
-| `"permissionDecision":"deny"` | Dialog **suppressed** — tool is blocked |
-| `"permissionDecision":"ask"` | Dialog **still appears** — hook defers to IDE |
-| Exit 0, no stdout | Dialog **still appears** — hook defers to IDE |
+| `"permissionDecision":"allow"` | Dialog **suppressed** - tool executes immediately |
+| `"permissionDecision":"deny"` | Dialog **suppressed** - tool is blocked |
+| `"permissionDecision":"ask"` | Dialog **still appears** - hook defers to IDE |
+| Exit 0, no stdout | Dialog **still appears** - hook defers to IDE |
 
-**The hook fires concurrently with the IDE dialog appearing**, not before it. The dialog is shown while the hook is long-polling. This is why AethelHook uses `AutoDismiss` (Windows `SendKeys`) to programmatically click the dialog after the phone responds — the hook's JSON output alone does not close an already-open dialog.
+**The hook fires concurrently with the IDE dialog appearing**, not before it. The dialog is shown while the hook is long-polling. This is why AethelHook uses `AutoDismiss` (Windows `SendKeys`) to programmatically click the dialog after the phone responds - the hook's JSON output alone does not close an already-open dialog.
 
 Observed `AutoDismiss` keystrokes:
 
 | Decision | Keys sent |
 |---|---|
-| Approve | `"1{ENTER}"` — selects "Yes, allow this time" and submits |
-| Deny | `"{ESC}"` — closes / skips the dialog |
+| Approve | `"1{ENTER}"` - selects "Yes, allow this time" and submits |
+| Deny | `"{ESC}"` - closes / skips the dialog |
 
 ---
 
-## Q9 — MCP Tool Interception
+## Q9 - MCP Tool Interception
 
 **Yes.** MCP tool calls appear in the hook stdin with the tool name in `toolCall.name` using the convention:
 
@@ -258,21 +258,21 @@ You can match them exactly in the `"matcher"` field:
 
 Or use the wildcard `"*"` to catch all tools including MCP.
 
-There is no MCP-specific exclusion path — MCP calls go through the same `PreToolUse` pipeline as native tools.
+There is no MCP-specific exclusion path - MCP calls go through the same `PreToolUse` pipeline as native tools.
 
 ---
 
-## Q10 — Hook Process Environment
+## Q10 - Hook Process Environment
 
 | Property | Value |
 |---|---|
 | **Execution model** | Run through the **system shell** (not exec'd directly). The `command` string is passed to the shell as an argument. |
 | **Working directory** | The **workspace root** (`workspacePaths[0]`), e.g. `C:\AethelHook` |
-| **PATH** | Inherits the agent process's PATH — standard Windows system dirs, `dotnet`, `powershell`, etc. are all available. |
+| **PATH** | Inherits the agent process's PATH - standard Windows system dirs, `dotnet`, `powershell`, etc. are all available. |
 | **Environment variables** | Full inherit of the IDE/agent process environment. `USERPROFILE`, `APPDATA`, `TEMP`, etc. are present. |
-| **stdin** | UTF-8 JSON payload (see Q4). The pipe may **not be closed** by the caller — use async read with a timeout (3 seconds works reliably). |
-| **stdout** | Read by the engine after the hook exits. Must be **clean JSON only** — no extra text, BOM, or log lines. |
-| **stderr** | Captured to agent logs. **Safe for debug output** — does not interfere with stdout JSON parsing. |
+| **stdin** | UTF-8 JSON payload (see Q4). The pipe may **not be closed** by the caller - use async read with a timeout (3 seconds works reliably). |
+| **stdout** | Read by the engine after the hook exits. Must be **clean JSON only** - no extra text, BOM, or log lines. |
+| **stderr** | Captured to agent logs. **Safe for debug output** - does not interfere with stdout JSON parsing. |
 
 > **Windows-specific:** PowerShell's `Out-File` defaults to UTF-16LE. Use `-Encoding ascii` or write to `[Console]::Error` for log output to avoid encoding issues.
 

@@ -1,6 +1,6 @@
 # ÆthelHook
 
-**AI agent permission gateway — approve or deny every tool call from your phone.**
+**AI agent permission gateway - approve or deny every tool call from your phone.**
 
 Built by **ÆthelSt8**.
 
@@ -8,7 +8,7 @@ Built by **ÆthelSt8**.
 
 ## What It Is
 
-When an AI coding agent (Claude Code, Cursor, etc.) wants to run a command, write a file, or execute anything on your machine, it has to ask your phone first. You get a notification, tap Allow or Deny, and the agent proceeds or stops — all in real time, from anywhere.
+When an AI coding agent (Claude Code, Cursor, etc.) wants to run a command, write a file, or execute anything on your machine, it has to ask your phone first. You get a notification, tap Allow or Deny, and the agent proceeds or stops - all in real time, from anywhere.
 
 No more clicking dialog boxes in your IDE. No more trusting the agent blindly. Full control, in your pocket.
 
@@ -23,7 +23,7 @@ AI coding agents are powerful but dangerous by default. They can:
 - Make network requests
 - Install packages
 
-Most IDEs show a simple "Allow / Deny" popup on the same screen you're working on — easy to click through without reading. ÆthelHook routes every one of those decisions to your phone, forcing a deliberate choice before anything runs.
+Most IDEs show a simple "Allow / Deny" popup on the same screen you're working on - easy to click through without reading. ÆthelHook routes every one of those decisions to your phone, forcing a deliberate choice before anything runs.
 
 ---
 
@@ -35,7 +35,7 @@ Most IDEs show a simple "Allow / Deny" popup on the same screen you're working o
 
 A .NET 9 Windows Service that runs in the background on your PC. It:
 
-- Listens on port `5264` (all interfaces — LAN, Tailscale, localhost)
+- Listens on port `5264` (all interfaces - LAN, Tailscale, localhost)
 - Receives hook events from the IDE
 - Pushes notifications to the phone over WebSocket (primary) or FCM push (fallback)
 - Waits for the phone's decision and returns it to the IDE hook
@@ -56,15 +56,15 @@ A Kotlin/Jetpack Compose app with a Liquid Glass UI. It:
 
 PowerShell scripts registered as Claude Code hooks. They:
 
-- Fire before every tool call (`PreToolUse`) — Bash, PowerShell, Write, Edit, Read
-- Fire before `AskUserQuestion` — routes Claude's multiple-choice questions to the phone instead of the native in-IDE dialog (see below)
+- Fire before every tool call (`PreToolUse`) - Bash, PowerShell, Write, Edit, Read
+- Fire before `AskUserQuestion` - routes Claude's multiple-choice questions to the phone instead of the native in-IDE dialog (see below)
 - Fire when Claude finishes its turn (`Stop`)
 - POST events to the PC API and wait for the phone's decision (up to 5 minutes)
 - Exit 0 (allow) or exit 2 with a JSON block (block the tool)
 
 ---
 
-## How It Works — Full Flow
+## How It Works - Full Flow
 
 ```
 Claude Code wants to run a Bash command
@@ -115,7 +115,7 @@ Claude calls AskUserQuestion
   ▼
 on_ask_question.ps1 fires (PreToolUse, matcher: AskUserQuestion)
   │  POST /hook/ask-question → WS (primary) or FCM (fallback)
-  │  GET  /hook/wait-answer/{sessionId} — blocks up to 5 minutes
+  │  GET  /hook/wait-answer/{sessionId} - blocks up to 5 minutes
   │
   ▼
 Phone shows a tap-to-open notification → QuestionActivity
@@ -130,7 +130,7 @@ Answer sent back (WS `question_answer` frame, or HTTP POST /hook/answer-question
 Hook emits hookSpecificOutput { permissionDecision: "allow", updatedInput: { answers } }
   │
   ▼
-Claude's turn continues using the phone's answer — no native dialog ever appears
+Claude's turn continues using the phone's answer - no native dialog ever appears
 ```
 
 This hook **fails open**, unlike the approval hooks: any failure (API unreachable, timeout, no
@@ -146,8 +146,8 @@ The app stays connected across all network scenarios without any manual configur
 ### Device Pairing (QR)
 
 The API token is no longer broadcast over the network. On first setup (or to pair an
-additional phone), open `http://localhost:5264/pair` on the PC — loopback-only, 403 for
-any remote caller — and scan the QR it shows from the app's Settings screen ("Scan QR to
+additional phone), open `http://localhost:5264/pair` on the PC - loopback-only, 403 for
+any remote caller - and scan the QR it shows from the app's Settings screen ("Scan QR to
 Pair"). The QR encodes a one-time, 120-second, single-use secret; scanning it redeems a
 real per-device API token via `POST /pair/claim`. The page swaps the QR for "✅ Paired"
 the instant it's claimed. Each paired device gets its own token (`devices.json`), so one
@@ -155,7 +155,7 @@ can be revoked later without affecting the others.
 
 ### On Home Wi-Fi / Same Network
 
-The PC broadcasts a UDP beacon (`AETHELHOOK:5264`) every 3 seconds on port 47263. The phone listens, reads the sender's IP, and connects automatically — this only carries the IP/port for convenience reconnects (e.g. after a DHCP lease change), never the token. No IP address entry needed once a device is paired.
+The PC broadcasts a UDP beacon (`AETHELHOOK:5264`) every 3 seconds on port 47263. The phone listens, reads the sender's IP, and connects automatically - this only carries the IP/port for convenience reconnects (e.g. after a DHCP lease change), never the token. No IP address entry needed once a device is paired.
 
 ### Phone as Hotspot
 
@@ -178,27 +178,27 @@ If the WebSocket is completely unreachable, the PC API sends a push notification
 | Option                          | What Happens                                                                          |
 | ------------------------------- | ------------------------------------------------------------------------------------- |
 | **Allow once**                  | Tool runs this one time                                                               |
-| **Always allow (this project)** | Added to project allow-list — never asked again for this command in this project      |
-| **Always allow (global)**       | Added to global allow-list — never asked again anywhere                               |
+| **Always allow (this project)** | Added to project allow-list - never asked again for this command in this project      |
+| **Always allow (global)**       | Added to global allow-list - never asked again anywhere                               |
 | **Deny**                        | Tool blocked. Claude sees "Denied via phone"                                          |
 | **Deny with reason**            | Tool blocked + Claude receives a custom instruction (e.g. "use a different approach") |
 
 ---
 
-## Android App — UI & Features
+## Android App - UI & Features
 
-- **Liquid Glass design** — transparent glass cards, animated gradient blob background, floating pill navigation bar
-- **Dark / Light mode** — true black dark mode (`#000000`), toggleable from Settings
-- **Dashboard** — gateway status (online/offline), quick toggle, test event button
-- **History** — scrollable log of all approval decisions
-- **Question answering** — full-screen `QuestionActivity` for AskUserQuestion: radio/checkbox options per question, always-available "Other" free-text field, single submit for a whole question batch
-- **Settings** — LAN URL field, Tailscale URL field, timeout setting
-- **Persistent foreground service** — keeps the WebSocket alive when the app is backgrounded or screen is off. Uses `remoteMessaging` service type (no Android time limits)
-- **Boot receiver** — service auto-starts when the phone boots (if gateway is enabled)
+- **Liquid Glass design** - transparent glass cards, animated gradient blob background, floating pill navigation bar
+- **Dark / Light mode** - true black dark mode (`#000000`), toggleable from Settings
+- **Dashboard** - gateway status (online/offline), quick toggle, test event button
+- **History** - scrollable log of all approval decisions
+- **Question answering** - full-screen `QuestionActivity` for AskUserQuestion: radio/checkbox options per question, always-available "Other" free-text field, single submit for a whole question batch
+- **Settings** - LAN URL field, Tailscale URL field, timeout setting
+- **Persistent foreground service** - keeps the WebSocket alive when the app is backgrounded or screen is off. Uses `remoteMessaging` service type (no Android time limits)
+- **Boot receiver** - service auto-starts when the phone boots (if gateway is enabled)
 - **Notification channels:**
-  - `aethelhook_channel` — approval requests (`IMPORTANCE_HIGH`, full-screen on lock screen)
-  - `aethelhook_done` — "Claude finished working" (`IMPORTANCE_DEFAULT`, quiet)
-  - `aethelhook_ws_service` — persistent service notification (`IMPORTANCE_LOW`, silent)
+  - `aethelhook_channel` - approval requests (`IMPORTANCE_HIGH`, full-screen on lock screen)
+  - `aethelhook_done` - "Claude finished working" (`IMPORTANCE_DEFAULT`, quiet)
+  - `aethelhook_ws_service` - persistent service notification (`IMPORTANCE_LOW`, silent)
 
 ---
 
@@ -216,15 +216,15 @@ Firebase Cloud Messaging (FCM) is used as a fallback when the WebSocket connecti
 
 ### Working
 
-- [x] Claude Code PreToolUse hooks — Bash, PowerShell, Write, Edit, Read
+- [x] Claude Code PreToolUse hooks - Bash, PowerShell, Write, Edit, Read
 - [x] Phone approval / denial with all 5 decision options
-- [x] AskUserQuestion phone routing — multi-choice + multi-select + free-text "Other" answers, no native dialog
+- [x] AskUserQuestion phone routing - multi-choice + multi-select + free-text "Other" answers, no native dialog
 - [x] "Claude finished working" notification after every turn
 - [x] WebSocket primary path (LAN + Tailscale)
 - [x] FCM fallback path
 - [x] UDP beacon auto-discovery (LAN)
 - [x] Tailscale auto-discovery + mobile data fallback
-- [x] Atomic WS client registration — fixes duplicate notifications seen after switching to Tailscale (concurrent reconnects could briefly leave two sockets registered)
+- [x] Atomic WS client registration - fixes duplicate notifications seen after switching to Tailscale (concurrent reconnects could briefly leave two sockets registered)
 - [x] 5-minute phone response window (approval + question flows)
 - [x] Persistent foreground service (no time limit crashes)
 - [x] Boot auto-start
@@ -233,23 +233,23 @@ Firebase Cloud Messaging (FCM) is used as a fallback when the WebSocket connecti
 - [x] Approval history log
 - [x] Dark / light mode
 - [x] Windows Service (auto-starts on boot)
-- [x] No hardcoded IPs or tokens — works on any network, for any user
-- [x] QR-code device pairing (2026-07-02) — replaces beacon-broadcasts-the-token model; per-device tokens, single-use/short-lived pairing sessions, loopback-only pairing page
+- [x] No hardcoded IPs or tokens - works on any network, for any user
+- [x] QR-code device pairing (2026-07-02) - replaces beacon-broadcasts-the-token model; per-device tokens, single-use/short-lived pairing sessions, loopback-only pairing page
 
 ### In Progress / Planned
 
 - [ ] Cursor adapter (hook mechanism not yet researched)
 - [ ] Antigravity adapter (scaffolded, not tested)
-- [ ] Windows `.exe` installer for easy PC setup — **needs rebuilding to include QR pairing** (`AethelHook-Setup.exe` still ships the pre-pairing binary; the running dev service was updated via `install.ps1` directly, not the installer). Planned for this weekend.
+- [ ] Windows `.exe` installer for easy PC setup - **needs rebuilding to include QR pairing** (`AethelHook-Setup.exe` still ships the pre-pairing binary; the running dev service was updated via `install.ps1` directly, not the installer). Planned for this weekend.
 - [ ] Distribution to friends / small group testing
-- [ ] Device management UI (list/revoke paired phones) — `GET /pair/devices` + `DELETE /pair/devices/{id}` exist server-side, no UI yet
+- [ ] Device management UI (list/revoke paired phones) - `GET /pair/devices` + `DELETE /pair/devices/{id}` exist server-side, no UI yet
 
 ### Known Limitations
 
 - APK must be sideloaded (no Play Store listing yet)
 - No in-app update mechanism
 - Tailscale URL must be entered manually on first mobile-data session if no prior LAN session
-- Pairing a phone requires physical/local access to the PC (must open `/pair` on the PC itself) — intentional, not a bug
+- Pairing a phone requires physical/local access to the PC (must open `/pair` on the PC itself) - intentional, not a bug
 
 ---
 
@@ -257,7 +257,7 @@ Firebase Cloud Messaging (FCM) is used as a fallback when the WebSocket connecti
 
 The goal is a near-zero-configuration install experience:
 
-**Phone:** Install APK → open app → scan the pairing QR shown at `http://localhost:5264/pair` on the PC once → done. After that, UDP beacon auto-discovers the PC's IP on subsequent LAN connections and Tailscale URL is saved for mobile-data use. (The one manual step — scanning the QR — replaced the old fully-automatic-but-insecure beacon-delivers-the-token flow.)
+**Phone:** Install APK → open app → scan the pairing QR shown at `http://localhost:5264/pair` on the PC once → done. After that, UDP beacon auto-discovers the PC's IP on subsequent LAN connections and Tailscale URL is saved for mobile-data use. (The one manual step - scanning the QR - replaced the old fully-automatic-but-insecure beacon-delivers-the-token flow.)
 
 **PC:** Run a single installer (`.exe`) → done. The installer will:
 
@@ -268,7 +268,7 @@ The goal is a near-zero-configuration install experience:
 
 **Firebase:** No action required from users. All installs share one Firebase project. Each user's PC sends only to their own phone.
 
-The installer will be built as a proper Windows `.exe` — not a zip, not a script the user has to run manually.
+The installer will be built as a proper Windows `.exe` - not a zip, not a script the user has to run manually.
 
 ---
 

@@ -29,7 +29,7 @@ Name: "english"; MessagesFile: "compiler:Default.isl"
 
 [Messages]
 WelcomeLabel1=Welcome to AethelHook
-WelcomeLabel2=This will install AethelHook on your computer.%n%nAethelHook routes AI agent tool calls to your Android phone for approval — keeping you in full control of what your AI can do.%n%nClick Next to continue.
+WelcomeLabel2=This will install AethelHook on your computer.%n%nAethelHook routes AI agent tool calls to your Android phone for approval - keeping you in full control of what your AI can do.%n%nClick Next to continue.
 FinishedHeadingLabel=AethelHook is ready
 FinishedLabel=The AethelHook service is installed and running.%n%nNext step: Install the APK on your Android phone, then connect to the same Wi-Fi as this PC. The app will auto-discover this PC within seconds.
 
@@ -54,7 +54,7 @@ Source: "dist\uninstall_hooks.ps1"; DestDir: "{app}"; Flags: ignoreversion
 Source: "dist\aethelhook.ico"; DestDir: "{app}"; Flags: ignoreversion
 
 [Dirs]
-; Deliberately NOT users-full here — this folder holds the TLS private key
+; Deliberately NOT users-full here - this folder holds the TLS private key
 ; (aethelhook-cert.pfx) and every paired device's auth token (devices.json).
 ; Granting the whole folder to Users would let any other local Windows account
 ; read both straight off disk, no admin rights needed. Program.cs additionally
@@ -71,7 +71,7 @@ Name: "{userstartup}\AethelHook Tray"; Filename: "{app}\Tray\AethelHook.Tray.exe
 ; Clean up any previous installation (safe to fail on fresh install)
 Filename: "{sys}\sc.exe"; Parameters: "stop AethelHook"; Flags: runhidden waituntilterminated
 Filename: "{sys}\sc.exe"; Parameters: "delete AethelHook"; Flags: runhidden waituntilterminated
-; Register and start the service using sc.exe directly — no PowerShell needed
+; Register and start the service using sc.exe directly - no PowerShell needed
 Filename: "{sys}\sc.exe"; Parameters: "create AethelHook binPath= ""{app}\AethelHook.API.exe"" start= auto DisplayName= ""AethelHook"""; StatusMsg: "Installing AethelHook service..."; Flags: runhidden waituntilterminated
 Filename: "{sys}\sc.exe"; Parameters: "start AethelHook"; Flags: runhidden waituntilterminated
 ; Open the phone-facing API port. Profile "Any" (rather than Private-only) is
@@ -80,7 +80,7 @@ Filename: "{sys}\sc.exe"; Parameters: "start AethelHook"; Flags: runhidden waitu
 ; match that profile too. The tradeoff is the port is also reachable from a
 ; hostile Public Wi-Fi network the PC happens to be on, relying entirely on
 ; TLS + per-device token auth (no network-level barrier) for protection there.
-; Note: no inbound rule for the UDP 47263 beacon — it's outbound-only (PC
+; Note: no inbound rule for the UDP 47263 beacon - it's outbound-only (PC
 ; broadcasts, never listens), so no inbound allow rule is needed for it.
 Filename: "{sys}\WindowsPowerShell\v1.0\powershell.exe"; Parameters: "-NonInteractive -NoProfile -ExecutionPolicy Bypass -Command ""Remove-NetFirewallRule -Name 'AethelHook-TCP-5264' -ErrorAction SilentlyContinue; New-NetFirewallRule -Name 'AethelHook-TCP-5264' -DisplayName 'AethelHook (TCP 5264)' -Direction Inbound -Protocol TCP -LocalPort 5264 -Action Allow -Profile Any | Out-Null"""; StatusMsg: "Configuring firewall..."; Flags: runhidden
 ; Wire Claude Code hooks

@@ -8,7 +8,7 @@ function Log($msg) {
 
 Log "Stop hook fired"
 
-# Read stdin — Codex provides last_assistant_message directly, plus the common
+# Read stdin - Codex provides last_assistant_message directly, plus the common
 # cwd field every Codex hook event carries (confirmed present on PreToolUse too).
 $summary = ""
 $cwd     = $null
@@ -42,7 +42,7 @@ if ($summary) { $notifyBody.detail = $summary }
 if ($cwd) { $notifyBody.cwd = $cwd }
 
 # Dispatch the actual notify POST to a fully detached process (see notify_async.ps1)
-# instead of waiting on it here — on a slow machine, PowerShell's own process-startup
+# instead of waiting on it here - on a slow machine, PowerShell's own process-startup
 # overhead can already eat most of Codex's Stop-hook timeout budget, so this hook's
 # own synchronous work must not also include a network round-trip.
 try {

@@ -1,6 +1,6 @@
 # AethelHook Stop Hook - detached notifier (Codex edition)
 # Launched via Start-Process by on_agent_done.ps1 so a slow/unreachable API can never
-# make the Stop hook itself exceed Codex's own timeout — this process runs completely
+# make the Stop hook itself exceed Codex's own timeout - this process runs completely
 # detached from the hook Codex is timing. Payload travels via a temp file (not an
 # encoded command-line string) so arbitrary AI-generated summary text never needs
 # shell-escaping.

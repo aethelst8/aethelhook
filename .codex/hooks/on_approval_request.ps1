@@ -79,7 +79,7 @@ if ($cmdName -eq "&") {
     }
 }
 
-# Unwrap "bash -lc <cmd>" or "& 'bash.exe' -lc <cmd>" — the .? after exe handles the closing quote
+# Unwrap "bash -lc <cmd>" or "& 'bash.exe' -lc <cmd>" - the .? after exe handles the closing quote
 if ($commandPreview -match '^(?:bash|.*bash\.exe.?)\s+-\w+\s+(.+)$') {
     $inner     = $Matches[1].Trim('"', "'")
     $unwrapped = ($inner -split '[\s"'']+')[0].Trim()
@@ -92,7 +92,7 @@ if ($commandPreview -match '^(?:bash|.*bash\.exe.?)\s+-\w+\s+(.+)$') {
 # "& 'exe'"/"bash -lc" unwrapping above) is kept only for the human-readable log/summary.
 $fullCommand = if ($commandPreview) { $commandPreview.Trim() } else { $toolName }
 
-# Codex turn_id — used by the API to deduplicate parallel tool calls in the same turn
+# Codex turn_id - used by the API to deduplicate parallel tool calls in the same turn
 $codexTurnId = if ($inputData -and $inputData.turn_id) { [string]$inputData.turn_id } else { "" }
 
 Log "Tool: $toolName | Cmd: $cmdName | TurnId: $codexTurnId | Preview: $commandPreview"

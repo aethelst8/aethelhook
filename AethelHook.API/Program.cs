@@ -30,7 +30,7 @@ Console.WriteLine($"[API] Detected local IP: {localIp}  →  {ApiBaseUrl}");
 if (tailscaleIp != null)
     Console.WriteLine($"[API] Tailscale IP: {tailscaleIp}  →  https://{tailscaleIp}:5264");
 else
-    Console.WriteLine("[API] Tailscale not detected — LAN-only mode");
+    Console.WriteLine("[API] Tailscale not detected - LAN-only mode");
 
 // ── TLS: self-signed cert, pinned by the phone via the QR pairing flow ─────────
 // Phone-facing traffic (port 5264) is HTTPS-only; PC-local callers (hook scripts,
@@ -52,11 +52,11 @@ Console.WriteLine($"[Security] {DeviceRegistry.List().Count} device(s) registere
 bool ValidateToken(HttpContext ctx) {
     if (ctx.Request.Headers.TryGetValue("X-AethelHook-Token", out var h) && DeviceRegistry.IsValidToken(h.ToString()))
         return true;
-    Console.WriteLine($"[Security] Unauthorized request from {ctx.Connection.RemoteIpAddress} — rejected");
+    Console.WriteLine($"[Security] Unauthorized request from {ctx.Connection.RemoteIpAddress} - rejected");
     return false;
 }
 
-// Loopback-only guard for the pairing UI endpoints — you must be sitting at the PC
+// Loopback-only guard for the pairing UI endpoints - you must be sitting at the PC
 // to generate/view a pairing QR. Only /pair/claim (called by the phone) skips this.
 bool IsLocalRequest(HttpContext ctx) => IPAddress.IsLoopback(ctx.Connection.RemoteIpAddress ?? IPAddress.None);
 
@@ -90,7 +90,7 @@ app.Map("/ws", async context =>
         return;
     }
 
-    // WebSocket upgrades cannot set custom headers — token comes as a query param
+    // WebSocket upgrades cannot set custom headers - token comes as a query param
     var queryToken = context.Request.Query["token"].ToString();
     if (!DeviceRegistry.IsValidToken(queryToken))
     {
@@ -108,7 +108,7 @@ app.Map("/ws", async context =>
     // Send a welcome ping so phone knows it's connected
     await conn.TrySendAsync(JsonSerializer.Serialize(new { type = "connected", message = "AethelHook WebSocket ready" }));
 
-    // Re-push events that arrived before this connection — only if recent (< 90s) to avoid
+    // Re-push events that arrived before this connection - only if recent (< 90s) to avoid
     // replaying stale test pings that were never resolved via wait-decision
     var replayCutoff = DateTime.UtcNow.AddSeconds(-90);
     foreach (var kv in DecisionStore.PendingEventPayloads)
@@ -128,7 +128,7 @@ app.Map("/ws", async context =>
         }
     }
 
-    // Keep the connection alive — read incoming frames (the phone sends decisions this way too)
+    // Keep the connection alive - read incoming frames (the phone sends decisions this way too)
     var buf = new byte[4096];
     while (ws.State == WebSocketState.Open)
     {
@@ -231,19 +231,19 @@ app.Map("/ws", async context =>
     Console.WriteLine("[WS] Phone disconnected");
 });
 
-// Gateway active flags — toggled by the Android app switch
+// Gateway active flags - toggled by the Android app switch
 bool IsGatewayActive = true;
 bool IsCodexGatewayActive = true;
 
 // Phase 2 (Session Access): the most recent working directory seen in any hook
-// event — the DEFAULT cwd for a brand-new phone conversation when the phone hasn't
+// event - the DEFAULT cwd for a brand-new phone conversation when the phone hasn't
 // explicitly picked a project. Shared across every open Claude Code window in every
-// editor (hooks are global, not editor-scoped — confirmed live with Cursor, which
+// editor (hooks are global, not editor-scoped - confirmed live with Cursor, which
 // has its own separate extension install but reads the same ~/.claude/ config), so
 // whichever project you touched most recently wins for a fresh conversation.
 string? LastKnownCwd = null;
 
-// One resumable claude session_id PER PROJECT DIRECTORY, not a single global one —
+// One resumable claude session_id PER PROJECT DIRECTORY, not a single global one -
 // lets the phone hold independent conversation threads with different projects (e.g.
 // AethelHook vs. a work project in Cursor) without them clobbering each other.
 // Passed back via --resume on the next send-prompt call for that same directory so
@@ -251,24 +251,24 @@ string? LastKnownCwd = null;
 // (confirmed via a live test: --resume <id> correctly recalled a fact from an
 // earlier run). Critical gotcha confirmed live: `--resume` FAILS immediately ("No
 // conversation found") if the cwd at resume time doesn't exactly match the cwd the
-// session was created in — so a resumed run must always use the SAME key (directory)
-// it's stored under here, never a drifted LastKnownCwd. No expiry yet — entries
+// session was created in - so a resumed run must always use the SAME key (directory)
+// it's stored under here, never a drifted LastKnownCwd. No expiry yet - entries
 // persist until the service restarts.
 // OrdinalIgnoreCase: Windows paths are case-insensitive but different tools report cwd
 // with different casing (e.g. Cursor sends "c:\ERP", Claude Code's own hook sends
-// "C:\ERP") — without this, the two are treated as distinct keys, showing up as
+// "C:\ERP") - without this, the two are treated as distinct keys, showing up as
 // duplicate "projects" on the phone and splitting one directory's session across two
 // unrelated ProjectSessions entries (confirmed live via the phone's picker).
 var ProjectSessions = new ConcurrentDictionary<string, string>(StringComparer.OrdinalIgnoreCase);
 
-// Same idea as ProjectSessions above, but for headless `codex exec` runs — Codex's own
+// Same idea as ProjectSessions above, but for headless `codex exec` runs - Codex's own
 // resumable identifier is a "thread_id", a distinct namespace from Claude's session_id,
 // so a project directory can hold one resumable thread per agent independently (you can
 // have a live Claude conversation AND a live Codex conversation in the same directory).
 var CodexProjectSessions = new ConcurrentDictionary<string, string>(StringComparer.OrdinalIgnoreCase);
 
 // Every distinct working directory any hook event has reported, with when it was
-// last seen — lets the phone list "known projects" to explicitly pick from instead
+// last seen - lets the phone list "known projects" to explicitly pick from instead
 // of always trusting whichever one LastKnownCwd currently points at.
 var KnownProjects = new ConcurrentDictionary<string, DateTime>(StringComparer.OrdinalIgnoreCase);
 
@@ -277,12 +277,12 @@ var KnownProjects = new ConcurrentDictionary<string, DateTime>(StringComparer.Or
 var PromptRunLock = new SemaphoreSlim(1, 1);
 
 // LastKnownCwd/ProjectSessions/KnownProjects above used to live in memory only ("no
-// expiry yet — entries persist until the service restarts"). That meant every service
-// restart (reboot, crash, or an install.ps1 redeploy — which stops and restarts the
+// expiry yet - entries persist until the service restarts"). That meant every service
+// restart (reboot, crash, or an install.ps1 redeploy - which stops and restarts the
 // service every time) silently wiped the phone's project picker and every resumable
 // conversation thread, forcing the user to re-open each project in an IDE just to
 // re-register it with a hook before the phone could see it again. Persisting to a
-// small JSON file closes that gap — loaded once at startup, saved after every mutation.
+// small JSON file closes that gap - loaded once at startup, saved after every mutation.
 const string ProjectStateFilePath = @"C:\ProgramData\AethelHook\project_state.json";
 var ProjectStateSaveLock = new object();
 
@@ -358,7 +358,7 @@ app.MapPost("/gateway/activate", (HttpContext ctx) =>
     if (!ValidateToken(ctx)) return Results.Unauthorized();
     IsGatewayActive = true;
     RestoreClaudeCodeHooks();
-    Console.WriteLine("[Gateway] Activated — hooks restored");
+    Console.WriteLine("[Gateway] Activated - hooks restored");
     return Results.Ok(new { status = "activated" });
 });
 
@@ -370,7 +370,7 @@ app.MapPost("/gateway/deactivate", (HttpContext ctx) =>
     if (!ValidateToken(ctx)) return Results.Unauthorized();
     IsGatewayActive = false;
     RemoveClaudeCodeHooks();
-    Console.WriteLine("[Gateway] Deactivated — hooks removed, native dialogs active");
+    Console.WriteLine("[Gateway] Deactivated - hooks removed, native dialogs active");
     return Results.Ok(new { status = "deactivated" });
 });
 
@@ -382,7 +382,7 @@ app.MapPost("/codex/gateway/activate", (HttpContext ctx) =>
     if (!ValidateToken(ctx)) return Results.Unauthorized();
     IsCodexGatewayActive = true;
     RestoreCodexHooks();
-    Console.WriteLine("[Codex Gateway] Activated — hooks.json restored");
+    Console.WriteLine("[Codex Gateway] Activated - hooks.json restored");
     return Results.Ok(new { status = "activated" });
 });
 
@@ -394,7 +394,7 @@ app.MapPost("/codex/gateway/deactivate", (HttpContext ctx) =>
     if (!ValidateToken(ctx)) return Results.Unauthorized();
     IsCodexGatewayActive = false;
     RemoveCodexHooks();
-    Console.WriteLine("[Codex Gateway] Deactivated — hooks.json removed, native Codex approvals active");
+    Console.WriteLine("[Codex Gateway] Deactivated - hooks.json removed, native Codex approvals active");
     return Results.Ok(new { status = "deactivated" });
 });
 
@@ -407,7 +407,7 @@ app.MapPost("/hook/event", async (HttpContext ctx, EventRequest request) =>
     // If gateway is inactive, return 503 so the hook's catch block removes hooks and exits 2
     if (!IsGatewayActive)
     {
-        Console.WriteLine($"[Gateway] Inactive — rejecting event {request.SessionId}, hook will restore native dialogs");
+        Console.WriteLine($"[Gateway] Inactive - rejecting event {request.SessionId}, hook will restore native dialogs");
         return Results.Problem("Gateway inactive", statusCode: 503);
     }
 
@@ -467,7 +467,7 @@ app.MapPost("/hook/event", async (HttpContext ctx, EventRequest request) =>
             if (wsSent)
                 Console.WriteLine($"[WS] Pushed event to phone for session {request.SessionId}");
             else
-                Console.WriteLine($"[WS] No open sockets — session {request.SessionId} will fail open on timeout");
+                Console.WriteLine($"[WS] No open sockets - session {request.SessionId} will fail open on timeout");
         }
         catch (Exception ex)
         {
@@ -537,7 +537,7 @@ app.MapPost("/hook/notify", async (HttpContext ctx, NotifyRequest request) =>
     if (!ValidateToken(ctx)) return Results.Unauthorized();
 
     // Stop fires reliably every turn regardless of whether any tool was called, so
-    // this is the most robust place to register a project — a chat-only turn (no
+    // this is the most robust place to register a project - a chat-only turn (no
     // PreToolUse/PostToolUse at all) would otherwise never show up in KnownProjects.
     if (!string.IsNullOrWhiteSpace(request.Cwd))
     {
@@ -553,7 +553,7 @@ app.MapPost("/hook/notify", async (HttpContext ctx, NotifyRequest request) =>
         detail  = request.Detail  ?? ""
     });
 
-    Console.WriteLine($"[Notify] agent_done — {request.Message}");
+    Console.WriteLine($"[Notify] agent_done - {request.Message}");
 
     bool wsSent = false;
     if (WsClientStore.HasClients)
@@ -568,7 +568,7 @@ app.MapPost("/hook/notify", async (HttpContext ctx, NotifyRequest request) =>
 // ─────────────────────────────────────────────────────────────────────────────
 // POST /hook/session-update  ─  fire-and-forget chunked progress ping (Phase 2:
 //                                Session Access). Fired by on_tool_done.ps1 after
-//                                each PostToolUse — no decision required, same
+//                                each PostToolUse - no decision required, same
 //                                shape as /hook/notify above.
 // ─────────────────────────────────────────────────────────────────────────────
 app.MapPost("/hook/session-update", async (HttpContext ctx, SessionUpdateRequest request) =>
@@ -605,7 +605,7 @@ app.MapGet("/hook/known-projects", (HttpContext ctx) =>
 
 // ─────────────────────────────────────────────────────────────────────────────
 // POST /hook/send-prompt  ─  phone → PC (Phase 2: Session Access). Runs the
-//                            prompt as a HEADLESS `claude -p` process — NOT
+//                            prompt as a HEADLESS `claude -p` process - NOT
 //                            injected into the live interactive session. This
 //                            was originally OS-level keystroke injection (typed
 //                            into the live VS Code window via the tray app), but
@@ -614,7 +614,7 @@ app.MapGet("/hook/known-projects", (HttpContext ctx) =>
 //                            failure mode: it's a fully isolated new session in
 //                            the last-known project directory, gated by the same
 //                            PreToolUse/PostToolUse hooks as any other session
-//                            (confirmed live — hooks are global, not session-
+//                            (confirmed live - hooks are global, not session-
 //                            scoped). Fire-and-forget from the caller's
 //                            perspective; progress/result arrive independently
 //                            via /hook/session-update broadcasts.
@@ -626,13 +626,13 @@ app.MapPost("/hook/send-prompt", (HttpContext ctx, SendPromptRequest request) =>
         return Results.BadRequest(new { error = "prompt is required" });
 
     // An explicit project_dir from the phone always wins (the user picked it). With
-    // none given, fall back to whatever LastKnownCwd currently is — same convenience
+    // none given, fall back to whatever LastKnownCwd currently is - same convenience
     // behavior as before a project was ever explicitly chosen.
     var cwd = !string.IsNullOrWhiteSpace(request.ProjectDir) ? request.ProjectDir : LastKnownCwd;
     if (string.IsNullOrEmpty(cwd) || !Directory.Exists(cwd))
     {
-        Console.WriteLine("[SendPrompt] No known working directory yet — cannot run headless prompt");
-        return Results.Problem("No active project directory known yet — trigger a tool call in your session first, or pick a project.");
+        Console.WriteLine("[SendPrompt] No known working directory yet - cannot run headless prompt");
+        return Results.Problem("No active project directory known yet - trigger a tool call in your session first, or pick a project.");
     }
 
     // Defense in depth: the phone's own project picker only ever offers directories
@@ -642,7 +642,7 @@ app.MapPost("/hook/send-prompt", (HttpContext ctx, SendPromptRequest request) =>
     if (!KnownProjects.ContainsKey(cwd))
     {
         Console.WriteLine($"[SendPrompt] Rejected unknown project directory: {cwd}");
-        return Results.Problem("That directory isn't a known project — trigger a tool call there first, or pick a project the phone already knows about.");
+        return Results.Problem("That directory isn't a known project - trigger a tool call there first, or pick a project the phone already knows about.");
     }
 
     var useCodex = string.Equals(request.Agent, "codex", StringComparison.OrdinalIgnoreCase);
@@ -652,7 +652,7 @@ app.MapPost("/hook/send-prompt", (HttpContext ctx, SendPromptRequest request) =>
         var (codexPath, codexProfile) = FindCodexCliInfo();
         if (codexPath == null)
         {
-            Console.WriteLine("[SendPrompt] codex.exe not found — cannot run headless prompt");
+            Console.WriteLine("[SendPrompt] codex.exe not found - cannot run headless prompt");
             return Results.Problem("Codex CLI not found on this machine.");
         }
         _ = Task.Run(() => RunHeadlessCodexPromptAsync(codexPath, codexProfile, cwd, request.Prompt));
@@ -663,7 +663,7 @@ app.MapPost("/hook/send-prompt", (HttpContext ctx, SendPromptRequest request) =>
     var (cliPath, userProfile) = FindClaudeCliInfo();
     if (cliPath == null)
     {
-        Console.WriteLine("[SendPrompt] claude.exe not found — cannot run headless prompt");
+        Console.WriteLine("[SendPrompt] claude.exe not found - cannot run headless prompt");
         return Results.Problem("Claude Code CLI not found on this machine.");
     }
 
@@ -694,7 +694,7 @@ app.MapPost("/hook/send-prompt", (HttpContext ctx, SendPromptRequest request) =>
             psi.ArgumentList.Add("--verbose");
 
             // Continue this DIRECTORY's conversation across phone-sent prompts instead
-            // of a fresh amnesiac session every time — confirmed live that --resume
+            // of a fresh amnesiac session every time - confirmed live that --resume
             // gives real conversational memory. A directory with no prior session_id
             // naturally starts fresh. Keyed per-directory (not global) so switching
             // projects on the phone doesn't disturb other projects' threads.
@@ -705,7 +705,7 @@ app.MapPost("/hook/send-prompt", (HttpContext ctx, SendPromptRequest request) =>
                 psi.ArgumentList.Add(resumeId);
             }
 
-            // This service runs as LocalSystem — without this override, the child
+            // This service runs as LocalSystem - without this override, the child
             // process inherits SYSTEM's own profile and claude.exe can't find the
             // real user's authentication under <profile>\.claude\ (confirmed live:
             // failed with is_error=true in seconds until this was added).
@@ -758,7 +758,7 @@ app.MapPost("/hook/send-prompt", (HttpContext ctx, SendPromptRequest request) =>
                         isError     = root.TryGetProperty("is_error", out var ie) && ie.GetBoolean();
                         resultText  = root.TryGetProperty("result", out var r) ? r.GetString() : "";
 
-                        // Only pin a session to resume from on a genuine success — a
+                        // Only pin a session to resume from on a genuine success - a
                         // transient failure shouldn't poison future resumes; the next
                         // message just starts fresh instead. Keyed by this run's own
                         // directory, not a global slot.
@@ -769,7 +769,7 @@ app.MapPost("/hook/send-prompt", (HttpContext ctx, SendPromptRequest request) =>
                         }
                     }
                 }
-                catch (JsonException) { /* not every line is JSON we need — skip */ }
+                catch (JsonException) { /* not every line is JSON we need - skip */ }
             }
 
             await process.WaitForExitAsync();
@@ -777,7 +777,7 @@ app.MapPost("/hook/send-prompt", (HttpContext ctx, SendPromptRequest request) =>
             if (gotResult)
             {
                 // A resumed run that still failed means this directory's pinned session
-                // is no longer resumable for some reason (deleted transcript, etc.) —
+                // is no longer resumable for some reason (deleted transcript, etc.) -
                 // clear just that entry so the NEXT message to this directory starts a
                 // fresh conversation instead of repeating this same failure forever.
                 // Other directories' sessions are untouched.
@@ -785,7 +785,7 @@ app.MapPost("/hook/send-prompt", (HttpContext ctx, SendPromptRequest request) =>
                 {
                     ProjectSessions.TryRemove(workDir, out _);
                     _ = Task.Run(SaveProjectState);
-                    Console.WriteLine($"[SendPrompt] Resumed run failed for {workDir} — cleared its pinned session, next message starts fresh");
+                    Console.WriteLine($"[SendPrompt] Resumed run failed for {workDir} - cleared its pinned session, next message starts fresh");
                 }
 
                 await BroadcastSessionEventAsync(
@@ -810,17 +810,17 @@ app.MapPost("/hook/send-prompt", (HttpContext ctx, SendPromptRequest request) =>
         }
     }
 
-    // Codex counterpart to RunHeadlessPromptAsync above — same shape (lock, spawn,
+    // Codex counterpart to RunHeadlessPromptAsync above - same shape (lock, spawn,
     // parse the CLI's own JSON stream, broadcast progress/result, pin a resumable id
     // per directory), adapted to Codex's `exec` subcommand and event schema instead of
     // Claude's `-p --output-format stream-json`. Live-verified: `codex exec` fires the
     // exact same PreToolUse hook (on_approval_request.ps1 under .codex\hooks\) as an
-    // interactive Codex session — approval_policy="never" + sandbox_mode=
+    // interactive Codex session - approval_policy="never" + sandbox_mode=
     // "danger-full-access" in the user's config.toml means Codex's own native approval
     // UI is fully disabled and this hook is the sole gate, confirmed still firing and
     // blocking on the phone's decision in headless exec mode exactly as it does
     // interactively. No --dangerously-bypass-approvals-and-sandbox or
-    // --dangerously-bypass-hook-trust is passed — both would either bypass the phone
+    // --dangerously-bypass-hook-trust is passed - both would either bypass the phone
     // gate entirely or aren't needed since hook trust is already established from this
     // user's prior interactive Codex use.
     async Task RunHeadlessCodexPromptAsync(string exePath, string? profileDir, string workDir, string prompt)
@@ -830,7 +830,7 @@ app.MapPost("/hook/send-prompt", (HttpContext ctx, SendPromptRequest request) =>
         {
             Console.WriteLine($"[SendPrompt] Starting headless Codex run in {workDir}");
 
-            // Codex's resumable identifier is a thread_id — a separate namespace from
+            // Codex's resumable identifier is a thread_id - a separate namespace from
             // Claude's session_id, so this directory's Codex thread is tracked
             // independently of any Claude session_id pinned for the same directory.
             var resumeId = CodexProjectSessions.TryGetValue(workDir, out var existingThreadId) ? existingThreadId : null;
@@ -847,12 +847,12 @@ app.MapPost("/hook/send-prompt", (HttpContext ctx, SendPromptRequest request) =>
             };
 
             // Explicit `-c` overrides instead of relying on the user's own config.toml
-            // already having these set — confirmed live on two fresh PCs that a default
+            // already having these set - confirmed live on two fresh PCs that a default
             // config.toml (sandbox_mode left as the Windows sandbox, not
             // "danger-full-access") makes `codex exec` try to initialize the Windows
             // sandbox helper and fail with `helper_sandbox_lock_failed` before
             // AethelHook's own Codex hook (the actual phone approval gate) ever runs.
-            // Overriding these here doesn't bypass that gate — it only stops Codex's
+            // Overriding these here doesn't bypass that gate - it only stops Codex's
             // own native sandbox/approval UI from getting in the way of a headless run,
             // exactly like setting them in config.toml does on this dev machine.
             void AddSandboxOverrides()
@@ -866,7 +866,7 @@ app.MapPost("/hook/send-prompt", (HttpContext ctx, SendPromptRequest request) =>
             psi.ArgumentList.Add("exec");
             if (!string.IsNullOrEmpty(resumeId))
             {
-                // `codex exec resume <id> "<prompt>"` — no -C here: a resumed session
+                // `codex exec resume <id> "<prompt>"` - no -C here: a resumed session
                 // already carries its own working directory from when it was created,
                 // and `exec resume` has no --cd flag at all (confirmed via --help).
                 psi.ArgumentList.Add("resume");
@@ -880,7 +880,7 @@ app.MapPost("/hook/send-prompt", (HttpContext ctx, SendPromptRequest request) =>
                 AddSandboxOverrides();
                 psi.ArgumentList.Add("--json");
                 // AethelHook itself isn't a git repo, and there's no guarantee an
-                // arbitrary project directory is either — always allow non-repo dirs.
+                // arbitrary project directory is either - always allow non-repo dirs.
                 psi.ArgumentList.Add("--skip-git-repo-check");
                 psi.ArgumentList.Add("-C");
                 psi.ArgumentList.Add(workDir);
@@ -888,7 +888,7 @@ app.MapPost("/hook/send-prompt", (HttpContext ctx, SendPromptRequest request) =>
             psi.ArgumentList.Add(prompt);
 
             // Same LocalSystem-profile override as the Claude runner (see its own
-            // comment above) — plus CODEX_HOME explicitly, since config.toml showed
+            // comment above) - plus CODEX_HOME explicitly, since config.toml showed
             // Codex reading it directly rather than always deriving it from HOME.
             if (!string.IsNullOrEmpty(profileDir))
             {
@@ -948,7 +948,7 @@ app.MapPost("/hook/send-prompt", (HttpContext ctx, SendPromptRequest request) =>
                             resultText = errText;
                     }
                 }
-                catch (JsonException) { /* not every line is JSON we need — skip */ }
+                catch (JsonException) { /* not every line is JSON we need - skip */ }
             }
 
             await process.WaitForExitAsync();
@@ -963,11 +963,11 @@ app.MapPost("/hook/send-prompt", (HttpContext ctx, SendPromptRequest request) =>
                 else if (isError && resumeId != null)
                 {
                     // Same reasoning as the Claude runner: a resumed run that still
-                    // failed means this thread is no longer resumable — clear it so
+                    // failed means this thread is no longer resumable - clear it so
                     // the next message starts fresh instead of repeating the failure.
                     CodexProjectSessions.TryRemove(workDir, out _);
                     _ = Task.Run(SaveProjectState);
-                    Console.WriteLine($"[SendPrompt] Resumed Codex run failed for {workDir} — cleared its pinned thread, next message starts fresh");
+                    Console.WriteLine($"[SendPrompt] Resumed Codex run failed for {workDir} - cleared its pinned thread, next message starts fresh");
                 }
 
                 await BroadcastSessionEventAsync(
@@ -1076,7 +1076,7 @@ app.MapPost("/hook/ask-question", async (HttpContext ctx, AskQuestionRequest req
     }
     else
     {
-        Console.WriteLine($"[WS] No open sockets — question for session {request.SessionId} will fail open on timeout");
+        Console.WriteLine($"[WS] No open sockets - question for session {request.SessionId} will fail open on timeout");
     }
 
     return Results.Ok(new { success = true, queued = true, ws_delivered = wsSent });
@@ -1090,7 +1090,7 @@ app.MapGet("/hook/wait-answer/{sessionId}", async (HttpContext ctx, string sessi
     if (!ValidateToken(ctx)) return Results.Unauthorized();
     // Fast path: answer already arrived.
     // NOTE: wrap the stored raw JSON directly via Results.Content rather than parsing it into
-    // a JsonDocument and returning `doc.RootElement` inside an anonymous object — ASP.NET
+    // a JsonDocument and returning `doc.RootElement` inside an anonymous object - ASP.NET
     // serializes the response after the handler returns, by which point a `using`-disposed
     // JsonDocument throws ObjectDisposedException on its RootElement. Both producers of this
     // string (WS handler, /hook/answer-question) always write validated JSON via GetRawText(),
@@ -1159,7 +1159,7 @@ app.MapPost("/hook/answer-question", (HttpContext ctx, AnswerQuestionRequest req
 
 // ─────────────────────────────────────────────────────────────────────────────
 // POST /hook/plan-request  ─  on_exit_plan.ps1 fires this for ExitPlanMode ("Accept
-//                              this plan?"); pushed over WS (notification only — the
+//                              this plan?"); pushed over WS (notification only - the
 //                              phone fetches the full plan via GET /hook/plan/{id}).
 // ─────────────────────────────────────────────────────────────────────────────
 app.MapPost("/hook/plan-request", async (HttpContext ctx, PlanRequest request) =>
@@ -1176,7 +1176,7 @@ app.MapPost("/hook/plan-request", async (HttpContext ctx, PlanRequest request) =
     _ = Task.Delay(TimeSpan.FromMinutes(15)).ContinueWith(t =>
         PlanReviewStore.PendingPlans.TryRemove(request.SessionId, out _));
 
-    // Tailscale first (works off the PC's LAN), LAN second — mirrors the phone's own
+    // Tailscale first (works off the PC's LAN), LAN second - mirrors the phone's own
     // LAN-then-Tailscale auto-switch in AethelHookWebSocket.kt.
     var candidateBases = tailscaleIp != null
         ? new[] { $"https://{tailscaleIp}:5264", ApiBaseUrl }
@@ -1214,7 +1214,7 @@ app.MapPost("/hook/plan-request", async (HttpContext ctx, PlanRequest request) =
     }
     else
     {
-        Console.WriteLine($"[WS] No open sockets — plan review for session {request.SessionId} will fail open on timeout");
+        Console.WriteLine($"[WS] No open sockets - plan review for session {request.SessionId} will fail open on timeout");
     }
 
     return Results.Ok(new { success = true, queued = true, ws_delivered = wsSent });
@@ -1233,7 +1233,7 @@ app.MapGet("/hook/plan/{sessionId}", (HttpContext ctx, string sessionId) =>
 });
 
 // ─────────────────────────────────────────────────────────────────────────────
-// GET /hook/wait-plan-decision/{sessionId}  ─  hook long-polls here (up to 600s — a
+// GET /hook/wait-plan-decision/{sessionId}  ─  hook long-polls here (up to 600s - a
 //                                               plan takes longer to read than a command).
 // ─────────────────────────────────────────────────────────────────────────────
 app.MapGet("/hook/wait-plan-decision/{sessionId}", async (HttpContext ctx, string sessionId) =>
@@ -1250,7 +1250,7 @@ app.MapGet("/hook/wait-plan-decision/{sessionId}", async (HttpContext ctx, strin
 
     var completedTask = await Task.WhenAny(tcs.Task, Task.Delay(TimeSpan.FromSeconds(600)));
     PlanReviewStore.PendingDecisions.TryRemove(sessionId, out _);
-    // Note: PendingPlans is intentionally NOT removed here — a long-poll completing
+    // Note: PendingPlans is intentionally NOT removed here - a long-poll completing
     // (including by timeout) doesn't mean the plan was resolved. It's only evicted on
     // an actual decision (/hook/plan-decision, WS plan_review_decision) or by the TTL
     // sweep below, so a stray/duplicate poll can't 404 a still-pending plan fetch.
@@ -1297,7 +1297,7 @@ app.MapPost("/hook/plan-decision", (HttpContext ctx, PlanDecisionRequest request
 });
 
 // ─────────────────────────────────────────────────────────────────────────────
-// QR pairing — replaces the old beacon-broadcasts-the-token flow.
+// QR pairing - replaces the old beacon-broadcasts-the-token flow.
 // GET /pair is opened on the PC itself (loopback-only), renders a QR encoding a
 // one-time sid+psk, and the phone POSTs /pair/claim (LAN-reachable) to redeem it
 // for a real per-device token.
@@ -1309,7 +1309,7 @@ const string PairingPageHtml = """
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>AethelHook — Pair a device</title>
+<title>AethelHook - Pair a device</title>
 <style>
   body { font-family: -apple-system, Segoe UI, sans-serif; background: #0d1117; color: #e6edf3;
          display: flex; align-items: center; justify-content: center; min-height: 100vh; margin: 0; }
@@ -1407,7 +1407,7 @@ app.MapGet("/pair/status", (HttpContext ctx, string sid) =>
 
 app.MapPost("/pair/claim", (HttpContext ctx, PairClaimRequest request) =>
 {
-    // Intentionally NOT loopback-restricted — the phone calls this from its own LAN IP.
+    // Intentionally NOT loopback-restricted - the phone calls this from its own LAN IP.
     // Security comes from sid+psk being a single-use, 120s-lived, 128-bit secret pair
     // that only ever exists on-screen in the QR shown by the loopback-only /pair page.
     var (ok, deviceId, token, error) = PairingStore.TryClaim(request.Sid, request.Psk);
@@ -1436,7 +1436,7 @@ app.MapDelete("/pair/devices/{id}", (HttpContext ctx, string id) =>
     return Results.Ok(new { removed });
 });
 
-// Loopback-only self-registration for the Windows tray app — no QR/psk ceremony
+// Loopback-only self-registration for the Windows tray app - no QR/psk ceremony
 // needed since being on loopback already proves same-machine trust. Mints once and
 // reuses the same "tray" device on subsequent calls (e.g. every tray app launch).
 app.MapPost("/pair/local-token", (HttpContext ctx) =>
@@ -1457,7 +1457,7 @@ app.MapGet("/tray/feed", (HttpContext ctx, int? limit) =>
     return Results.Ok(TrayFeedStore.Recent(limit ?? 50));
 });
 
-// UDP beacon — broadcasts every 3s so the Android app can auto-discover the PC's IP.
+// UDP beacon - broadcasts every 3s so the Android app can auto-discover the PC's IP.
 // No longer includes the token (that's only ever handed out via QR pairing above).
 // Format: "AETHELHOOK:5264" or "AETHELHOOK:5264:{tailscaleIp}"
 _ = Task.Run(async () =>
@@ -1547,7 +1547,7 @@ static X509Certificate2 LoadOrCreateHttpsCertificate(string localIp)
     // rollout) rather than silently keeping the now-known password around.
     if (File.Exists(certPath) && !File.Exists(certPasswordPath))
     {
-        Console.WriteLine("[TLS] Found a certificate from before per-install password randomization — regenerating");
+        Console.WriteLine("[TLS] Found a certificate from before per-install password randomization - regenerating");
         File.Delete(certPath);
     }
 
@@ -1568,7 +1568,7 @@ static X509Certificate2 LoadOrCreateHttpsCertificate(string localIp)
 
     if (!File.Exists(certPath))
     {
-        Console.WriteLine("[TLS] No certificate found — generating a new self-signed cert");
+        Console.WriteLine("[TLS] No certificate found - generating a new self-signed cert");
         using var rsa = RSA.Create(2048);
         var req = new CertificateRequest("CN=AethelHook", rsa, HashAlgorithmName.SHA256, RSASignaturePadding.Pkcs1);
 
@@ -1672,13 +1672,13 @@ static string? FindClaudeSettingsPath()
 }
 
 // Phase 2 (Session Access): no standalone `claude` CLI is guaranteed to be on
-// PATH — confirmed on the dev machine it isn't, even with the VS Code extension
+// PATH - confirmed on the dev machine it isn't, even with the VS Code extension
 // installed and in daily use. The extension bundles a fully-functional copy of
 // the same binary at <extension>\resources\native-binary\claude.exe, which is
 // what headless `-p` runs actually use. Same "scan C:\Users\* for a real
 // profile" pattern as FindClaudeSettingsPath, since this runs as SYSTEM.
 //
-// Also returns the owning user's profile directory — this service runs as
+// Also returns the owning user's profile directory - this service runs as
 // LocalSystem, so a plain Process.Start of claude.exe inherits SYSTEM's own
 // profile/environment, not the real user's. Without HOME/USERPROFILE/APPDATA
 // pointed at the real profile, claude.exe can't find the user's authentication
@@ -1757,18 +1757,18 @@ static void RestoreClaudeCodeHooks()
         var settingsPath = FindClaudeSettingsPath();
         if (settingsPath == null)
         {
-            Console.WriteLine("[API] Warning: could not locate .claude/settings.json — hooks not restored");
+            Console.WriteLine("[API] Warning: could not locate .claude/settings.json - hooks not restored");
             return;
         }
 
-        // Points at the installed, portable hook location (ProgramData) — never the dev
-        // repo checkout — so this works identically on any machine the installer targets.
+        // Points at the installed, portable hook location (ProgramData) - never the dev
+        // repo checkout - so this works identically on any machine the installer targets.
         const string hookCmd    = @"powershell.exe -ExecutionPolicy Bypass -Command ""& 'C:\ProgramData\AethelHook\hooks\on_approval_request.ps1'""";
         const string doneCmd    = @"powershell.exe -ExecutionPolicy Bypass -Command ""& 'C:\ProgramData\AethelHook\hooks\on_agent_done.ps1'""";
         const string askQCmd    = @"powershell.exe -ExecutionPolicy Bypass -Command ""& 'C:\ProgramData\AethelHook\hooks\on_ask_question.ps1'""";
         const string exitPlanCmd = @"powershell.exe -ExecutionPolicy Bypass -Command ""& 'C:\ProgramData\AethelHook\hooks\on_exit_plan.ps1'""";
         const string sessionStartCmd = @"powershell.exe -ExecutionPolicy Bypass -Command ""& 'C:\ProgramData\AethelHook\hooks\on_session_start.ps1'""";
-        // Phase 2 (Session Access) chunked-progress heartbeat — fires after every tool
+        // Phase 2 (Session Access) chunked-progress heartbeat - fires after every tool
         // call, never blocks (on_tool_done.ps1 is fire-and-forget, short timeout).
         const string toolDoneCmd = @"powershell.exe -ExecutionPolicy Bypass -Command ""& 'C:\ProgramData\AethelHook\hooks\on_tool_done.ps1'""";
         var aethelAllow = new[] { "PowerShell(*)", "Write(*)", "Edit(*)", "Read(*)", "Bash(*)" };
@@ -1888,7 +1888,7 @@ static void RemoveClaudeCodeHooks()
 
         File.WriteAllText(settingsPath,
             settings.ToJsonString(new JsonSerializerOptions { WriteIndented = true }));
-        Console.WriteLine("[API] Claude Code hooks removed from settings.json — native dialogs active");
+        Console.WriteLine("[API] Claude Code hooks removed from settings.json - native dialogs active");
     }
     catch (Exception ex)
     {
@@ -1922,13 +1922,13 @@ static void RestoreCodexHooks()
         var hooksPath = FindCodexHooksPath();
         if (hooksPath == null)
         {
-            Console.WriteLine("[Codex] Warning: could not locate .codex directory — hooks not restored");
+            Console.WriteLine("[Codex] Warning: could not locate .codex directory - hooks not restored");
             return;
         }
 
         Directory.CreateDirectory(Path.GetDirectoryName(hooksPath)!);
 
-        // Codex-specific subfolder — its on_approval_request.ps1/on_agent_done.ps1 are
+        // Codex-specific subfolder - its on_approval_request.ps1/on_agent_done.ps1 are
         // distinct scripts from Claude Code's same-named files, so they can't share the
         // flat hooks\ folder without colliding.
         const string approvalCmd = @"powershell.exe -ExecutionPolicy Bypass -File C:\ProgramData\AethelHook\hooks\codex\on_approval_request.ps1";
@@ -1977,7 +1977,7 @@ static void RemoveCodexHooks()
         var hooksPath = FindCodexHooksPath();
         if (hooksPath == null || !File.Exists(hooksPath)) return;
         File.Delete(hooksPath);
-        Console.WriteLine("[Codex] hooks.json removed — native Codex approvals active");
+        Console.WriteLine("[Codex] hooks.json removed - native Codex approvals active");
     }
     catch (Exception ex)
     {
@@ -1986,7 +1986,7 @@ static void RemoveCodexHooks()
 }
 
 // Antigravity (Gemini) reads its GLOBAL hooks config from
-// C:\Users\<user>\.gemini\config\hooks.json — see ANTIGRAVITY_HOOKS.md. Distinct from
+// C:\Users\<user>\.gemini\config\hooks.json - see ANTIGRAVITY_HOOKS.md. Distinct from
 // this repo's own dev-only project-level .agents\hooks.json, which stays untouched.
 static string? FindAntigravityHooksPath()
 {
@@ -2014,7 +2014,7 @@ static void RestoreAntigravityHooks()
         var hooksPath = FindAntigravityHooksPath();
         if (hooksPath == null)
         {
-            Console.WriteLine("[Antigravity] Warning: could not locate .gemini directory — hooks not restored");
+            Console.WriteLine("[Antigravity] Warning: could not locate .gemini directory - hooks not restored");
             return;
         }
 
@@ -2067,7 +2067,7 @@ static void RemoveAntigravityHooks()
         var hooksPath = FindAntigravityHooksPath();
         if (hooksPath == null || !File.Exists(hooksPath)) return;
         File.Delete(hooksPath);
-        Console.WriteLine("[Antigravity] hooks.json removed — native Antigravity approvals active");
+        Console.WriteLine("[Antigravity] hooks.json removed - native Antigravity approvals active");
     }
     catch (Exception ex)
     {
@@ -2143,7 +2143,7 @@ public static class WsClientStore
     public static WsConnection Register(WebSocket ws, string token)
     {
         // Single-user: evict stale connections so BroadcastAsync never sends doubles.
-        // Evict-then-add must be atomic — two /ws upgrades racing (e.g. a phone reconnect
+        // Evict-then-add must be atomic - two /ws upgrades racing (e.g. a phone reconnect
         // storm triggered by Tailscale's tun interface flapping) could otherwise both slip
         // past the eviction and stay registered, so every event gets broadcast twice.
         var conn = new WsConnection(ws, token);
@@ -2203,7 +2203,7 @@ public static class DecisionStore
 {
     public static readonly ConcurrentDictionary<string, TaskCompletionSource<string>> PendingDecisions = new();
     public static readonly ConcurrentDictionary<string, string> RecentDecisions = new();
-    // Full event JSON per pending session — re-pushed to phones that connect late
+    // Full event JSON per pending session - re-pushed to phones that connect late
     // Stores payload + the time it was queued; re-pushed on reconnect only if recent (< 90s)
     public static readonly ConcurrentDictionary<string, (string Payload, DateTime StoredAt)> PendingEventPayloads = new();
 
@@ -2232,7 +2232,7 @@ public record DeviceRecord(Guid Id, string Token, string Label, DateTime PairedA
 
 public static class CryptoUtil
 {
-    // Avoids a timing side-channel when comparing device tokens / pairing psks — plain
+    // Avoids a timing side-channel when comparing device tokens / pairing psks - plain
     // string equality (`==`) short-circuits on the first mismatched byte, so response
     // time can leak how many leading characters an attacker's guess got right.
     public static bool ConstantTimeEquals(string a, string b) =>
@@ -2241,7 +2241,7 @@ public static class CryptoUtil
     // Strips inherited permissions from a sensitive file (device tokens, TLS private key,
     // session state) and grants access only to Administrators + SYSTEM. Without this, these
     // files sit directly under C:\ProgramData\AethelHook and inherit whatever ACL the
-    // installer/OS placed on that folder — on a multi-user PC that previously meant every
+    // installer/OS placed on that folder - on a multi-user PC that previously meant every
     // other local Windows account (no admin rights needed) could read every paired device's
     // bearer token or the TLS private key straight off disk.
 #pragma warning disable CA1416 // this app only ever runs on Windows (LocalSystem service)
@@ -2366,7 +2366,7 @@ public class FeedEntry
 // Bounded in-memory history of approval requests, for the tray app's live feed.
 // Deliberately polling-based (GET /tray/feed) rather than pushed over /ws:
 // WsClientStore evicts any existing connection the moment a new one registers
-// (single-client by design — see its own comment), so a second listener there
+// (single-client by design - see its own comment), so a second listener there
 // would fight the phone's connection instead of coexisting with it.
 public static class TrayFeedStore
 {
@@ -2426,7 +2426,7 @@ public static class PairingStore
 
     public static (string sid, int expiresInSec) CreateSession()
     {
-        // Opportunistic cleanup — session count is always tiny, no background timer needed.
+        // Opportunistic cleanup - session count is always tiny, no background timer needed.
         foreach (var kv in _sessions)
             if (kv.Value.ExpiresAt < DateTime.UtcNow) _sessions.TryRemove(kv.Key, out _);
 
@@ -2476,7 +2476,7 @@ public static class PairingStore
 }
 
 // Mirrors DecisionStore's TCS-wait pattern for AskUserQuestion answers. No Codex
-// shadow/dedup logic needed here — AskUserQuestion isn't called in parallel duplicate ways.
+// shadow/dedup logic needed here - AskUserQuestion isn't called in parallel duplicate ways.
 public static class QuestionStore
 {
     public static readonly ConcurrentDictionary<string, TaskCompletionSource<string>> PendingAnswers = new();
@@ -2533,7 +2533,7 @@ public record NotifyRequest(
     [property: JsonPropertyName("cwd")]     string? Cwd
 );
 
-// Questions/Answers are kept as raw JsonElement — the API is a dumb relay that never
+// Questions/Answers are kept as raw JsonElement - the API is a dumb relay that never
 // needs to understand AskUserQuestion's schema, just pass it through unmodified.
 public record AskQuestionRequest(
     [property: JsonPropertyName("session_id")] string SessionId,

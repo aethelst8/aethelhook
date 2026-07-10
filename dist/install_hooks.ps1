@@ -2,11 +2,11 @@
 # Codex's hooks.json, and Antigravity's global hooks.json.
 # Receives the actual user's profile path as $args[0] (passed by Inno Setup {userprofile}).
 # Mirrors AethelHook.API\Program.cs's RestoreClaudeCodeHooks()/RestoreCodexHooks()/
-# RestoreAntigravityHooks() — keep all in sync. This script runs once at install time,
+# RestoreAntigravityHooks() - keep all in sync. This script runs once at install time,
 # using the real installing user's profile (reliable even under UAC elevation); the
 # Program.cs functions re-apply on every service start, but run as the SYSTEM service
 # account, which can't reliably resolve the real user's profile on a truly fresh
-# machine with no existing .claude/.codex/.gemini folder — this bootstrap step is what
+# machine with no existing .claude/.codex/.gemini folder - this bootstrap step is what
 # makes first install work before those folders exist.
 
 param([string]$UserProfile)

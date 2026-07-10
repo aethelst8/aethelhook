@@ -1,17 +1,17 @@
 > **ARCHIVED (2026-07-06):** superseded by `CLAUDE.md` at the repo root. One-time fix
-> handoff from an early stage of the project — kept for history only.
+> handoff from an early stage of the project - kept for history only.
 
-# AethelHook — Fix Handover for Antigravity
+# AethelHook - Fix Handover for Antigravity
 
 ## The Problem
 
 After the user taps Approve on the phone notification, Antigravity still shows a native
-permission dialog in the IDE requiring manual input. The hook is working correctly —
+permission dialog in the IDE requiring manual input. The hook is working correctly -
 the issue is how the hook response is structured and a known Antigravity regression.
 
 ---
 
-## Root Cause 1 — Wrong JSON Structure
+## Root Cause 1 - Wrong JSON Structure
 
 The current `on_approval_request.ps1` outputs:
 
@@ -46,43 +46,43 @@ And for deny:
 
 ---
 
-## Root Cause 2 — Known Antigravity Bug (v2.1.119)
+## Root Cause 2 - Known Antigravity Bug (v2.1.119)
 
 There is a confirmed regression in Antigravity v2.1.119 where `permissionDecision: "allow"`
 in a PreToolUse hook does not suppress the native permission prompt in interactive mode.
-Hook exit 2 (deny) correctly blocks the tool — only the allow suppression path is broken.
+Hook exit 2 (deny) correctly blocks the tool - only the allow suppression path is broken.
 
 The fix is to set `defaultMode` in the Claude settings file so Antigravity defers
 permission decisions to the hook system rather than showing its own dialog.
 
 ---
 
-## Fix 1 — Update `on_approval_request.ps1`
+## Fix 1 - Update `on_approval_request.ps1`
 
 Find every place in the script that outputs the permission decision and wrap it inside
 `hookSpecificOutput`.
 
 Replace the allow output:
 ```powershell
-# OLD — incorrect
+# OLD - incorrect
 Write-Output '{"permissionDecision":"allow"}'
 
-# NEW — correct
+# NEW - correct
 Write-Output '{"hookSpecificOutput":{"permissionDecision":"allow"}}'
 ```
 
 Replace the deny output:
 ```powershell
-# OLD — incorrect
+# OLD - incorrect
 Write-Output '{"permissionDecision":"deny","permissionDecisionReason":"Declined via phone"}'
 
-# NEW — correct
+# NEW - correct
 Write-Output '{"hookSpecificOutput":{"permissionDecision":"deny","permissionDecisionReason":"Declined via phone"}}'
 ```
 
 ---
 
-## Fix 2 — Update `C:\Users\Moloi\.claude\settings.json`
+## Fix 2 - Update `C:\Users\Moloi\.claude\settings.json`
 
 Create or overwrite this file with the following content:
 
@@ -116,7 +116,7 @@ This ensures:
 
 ---
 
-## Fix 3 — Keep `.agents/hooks.json` As-Is
+## Fix 3 - Keep `.agents/hooks.json` As-Is
 
 The existing hook config at `C:\AethelHook\.agents\hooks.json` is correct and does
 not need to change. The matcher on `ask_permission` is fine. The problem is upstream
@@ -133,7 +133,7 @@ dotnet run --project C:\AethelHook\AethelHook.API\AethelHook.API.csproj --urls "
 
 2. Start a new Antigravity session in `C:\AethelHook\`
 
-3. Trigger any action that requires a permission — e.g. ask the agent to read a file
+3. Trigger any action that requires a permission - e.g. ask the agent to read a file
    or run a shell command
 
 4. Verify the sequence:
@@ -150,7 +150,7 @@ dotnet run --project C:\AethelHook\AethelHook.API\AethelHook.API.csproj --urls "
 ## If the IDE Dialog Still Appears After These Fixes
 
 This confirms the v2.1.119 regression is the cause. In that case apply this additional
-workaround — add specific tool patterns to `antigravity.commands.alwaysAllow` in
+workaround - add specific tool patterns to `antigravity.commands.alwaysAllow` in
 Antigravity's user settings to pre-approve common read-only operations, while keeping
 AethelHook as the approval gateway for destructive operations like `run_command`,
 `write_file`, and `delete_file`.
