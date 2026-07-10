@@ -2,9 +2,11 @@
 
 AI agent permission gateway: routes dangerous tool calls (and now phone-initiated
 prompts) between Claude Code / Codex / Antigravity and an Android phone. See
-`PROJECT.md` for the full product description; this file is the current,
+`README.md` for the public-facing product description; this file is the current,
 continuously-maintained technical reference — keep it up to date as things change,
-don't let it go stale like the archived docs in `docs/archive/`.
+don't let it go stale like the archived docs in `docs/archive/` (including the old
+`PROJECT.md`, retired 2026-07-10 once its FCM/Firebase-era content contradicted the
+security work since done — see README.md instead).
 
 ## Architecture
 
