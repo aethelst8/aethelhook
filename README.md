@@ -118,6 +118,14 @@ dotnet publish AethelHook.Tray\AethelHook.Tray.csproj -c Release -r win-x64 --se
 This produces `AethelHook-Setup.exe` — run it (elevated) to install the service, the
 hooks, and the Tray app.
 
+> **Note:** the installer isn't code-signed yet — the usual free routes for open source
+> projects (SignPath, OSSign) require release history this project doesn't have yet,
+> and Microsoft Trusted Signing currently only accepts individual developers in the
+> US/Canada. So Windows SmartScreen will likely show "Windows protected your PC" the
+> first time you run it — click **More info → Run anyway**. Same applies to installing
+> the APK — Android will warn about installing from an unknown source; that's expected
+> for a sideloaded app not yet on the Play Store.
+
 **Phone:**
 ```bash
 export JAVA_HOME="/c/Program Files/Android/Android Studio/jbr"
