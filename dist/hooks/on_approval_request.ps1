@@ -27,18 +27,24 @@ function Send-NativeDialogKeyIfNeeded([string]$key, [string]$feedback = "") {
 
     $workspaceName = if ($inputData.cwd) { Split-Path $inputData.cwd -Leaf } else { "AethelHook" }
 
-    $feedbackFile = ""
+    # Build the argument list conditionally - an empty-string "-FeedbackFile" element
+    # can vanish from the actual command line Start-Process builds, shifting
+    # "-WorkspaceName" into becoming -FeedbackFile's value and breaking parameter
+    # binding before send_plan_key.ps1's first line even runs (confirmed live: it
+    # launched but never logged anything, unlike every working invocation elsewhere).
+    $argList = @(
+        "-NoProfile", "-ExecutionPolicy", "Bypass", "-File",
+        (Join-Path $PSScriptRoot "send_plan_key.ps1"), "-Key", $key
+    )
     if ($feedback) {
         $feedbackFile = [System.IO.Path]::GetTempFileName()
         Set-Content -Path $feedbackFile -Value $feedback -Encoding UTF8 -NoNewline
+        $argList += @("-FeedbackFile", $feedbackFile)
     }
+    $argList += @("-WorkspaceName", "`"$workspaceName`"")
 
     Log "Launching send_plan_key.ps1 for native $toolName dialog (Key=$key)"
-    Start-Process powershell.exe -WindowStyle Hidden -ArgumentList @(
-        "-NoProfile", "-ExecutionPolicy", "Bypass", "-File",
-        (Join-Path $PSScriptRoot "send_plan_key.ps1"), "-Key", $key, "-FeedbackFile", $feedbackFile,
-        "-WorkspaceName", "`"$workspaceName`""
-    )
+    Start-Process powershell.exe -WindowStyle Hidden -ArgumentList $argList
 }
 
 # Read tool input from stdin
