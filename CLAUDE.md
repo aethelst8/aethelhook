@@ -301,6 +301,29 @@ security work since done — see README.md instead).
     anyway, so leaving it in would've just been a stale, misleading artifact.
     Live-verified end-to-end: fresh install, re-pair via QR, phone connected over the
     pinned HTTPS/WSS connection successfully.
+21. **`WebSearch`/`WebFetch` show a native Claude Code confirmation dialog regardless
+    of this hook's exit code/decision — the same "native dialog ignores the hook's
+    decision" behavior as gotcha #13's `AskUserQuestion`/`ExitPlanMode`, just not
+    previously discovered for these two tools.** Confirmed live via `hook_debug.log`:
+    the hook fires, posts to the API, and gets a real phone decision back in under a
+    second, but the dialog ("Allow searching for this query?", `1`/`2`/`3` digit
+    choices + a free-text "Tell Claude what to do instead" box) still renders and
+    requires manual input. That dialog's shape is identical to the `ExitPlanMode`
+    dialog `send_plan_key.ps1` already drives, so `on_approval_request.ps1` (Claude
+    Code edition only — Codex/Antigravity don't have a `WebSearch` equivalent) now
+    launches it after a phone decision arrives for these two tool names, mapped
+    `allow`/`allow_once`→`1`, `always_allow_*`→`2` (no global option in this dialog,
+    project-scoped is the closest available), `deny`→`3`, `deny_with_reason`→`3` +
+    the reason typed into the free-text box. Hit one real bug while wiring this up:
+    always passing `-FeedbackFile` (even as an empty string) to `send_plan_key.ps1`
+    via `Start-Process -ArgumentList` made the empty element vanish from the actual
+    command line, shifting `-WorkspaceName` into becoming `-FeedbackFile`'s value and
+    silently breaking parameter binding before the script's first line ran — fixed by
+    only appending `-FeedbackFile` to the argument array when feedback is actually
+    present, matching `on_exit_plan.ps1`'s existing conditional pattern. Live-verified
+    2026-07-10: triggered `WebSearch` multiple times, tested both `allow` and `deny`
+    (twice each) — dialog dismissed itself correctly in sync with the phone tap every
+    time, and `deny` genuinely blocked the tool call ("Denied via phone").
 
 ## Key file paths
 
