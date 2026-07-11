@@ -324,6 +324,27 @@ security work since done - see README.md instead).
     2026-07-10: triggered `WebSearch` multiple times, tested both `allow` and `deny`
     (twice each) - dialog dismissed itself correctly in sync with the phone tap every
     time, and `deny` genuinely blocked the tool call ("Denied via phone").
+22. **`Grep` and `Glob` were never wired into AethelHook at all - missing from both the
+    `PreToolUse` matcher list and the `permissions.allow` bypass list in `Program.cs`**,
+    so every Grep/Glob tool call hit Claude Code's own native "allow this tool" dialog
+    directly, never reaching `on_approval_request.ps1` or the phone. A different failure
+    mode than gotcha #13/#21 (native dialog overriding a real hook decision) - here there
+    was no hook decision at all, since no matcher existed for the hook to even fire on.
+    Confirmed live: `settings.json` had matchers for Write/Edit/Read/NotebookEdit/
+    CronCreate/CronDelete/WebFetch/WebSearch/Bash/PowerShell but no Grep/Glob entry, so
+    clicking "Always Allow" on the native dialog was a Claude-Code-native grant, not an
+    AethelHook one - it didn't persist the way the user expected. Fix: added `Grep`/`Glob`
+    as `PreToolUse` matchers (routed to the phone, same treatment as `Read`) and to the
+    `permissions.allow` seed list (`aethelAllow`) in `RestoreClaudeCodeHooks()`, mirrored
+    in `RemoveClaudeCodeHooks()`'s revocation list, and added the missing `Bash(*)`/
+    `Grep(*)`/`Glob(*)` entries to `on_approval_request.ps1`'s own self-destruct fallback
+    list (which was already missing `Bash(*)` before this, an unrelated pre-existing gap
+    fixed for consistency while touching that array). Claude-Code-specific only - Codex
+    and Antigravity route all shell/file access through their own single `run_command`/
+    `apply_patch`-style matchers already, so they don't have this gap. Live-verified
+    2026-07-11: triggered a real `Grep` tool call after `install.ps1` redeployed,
+    confirmed via `hook_debug.log`/`api.log` that it now posts an `APPROVAL_REQUEST` and
+    routes to the phone exactly like a `Bash` call, with no native dialog appearing.
 
 ## Key file paths
 
@@ -363,6 +384,49 @@ dotnet publish AethelHook.Tray\AethelHook.Tray.csproj -c Release -r win-x64 --se
 significant work session, the same way you'd update any other session/handoff file.
 Older entries can be trimmed once they're no longer relevant; this isn't a full
 changelog (see git history / memory for that), just enough to orient the next session.*
+
+**As of 2026-07-11 (Android UI fixes shipped as v1.0.1, Grep/Glob approval-gate gap
+fixed, Windows installer refreshed):**
+
+- **Two small Android fixes**: removed the "Liquid glass theme" subtitle under
+  Settings > Appearance, and the Dashboard header logo now switches to a
+  white-background variant in light mode instead of always showing the black one.
+  The launcher icon is a raster asset (no separate light-mode art existed anywhere
+  in the repo), so rather than ship a second icon file the fix recolors the existing
+  bitmap at runtime - a luminance-threshold pass (`recolorBlackBackgroundToWhite` in
+  `MainActivity.kt`) that maps near-black pixels to white and leaves the blue/grey
+  glyph colors untouched, computed once via `remember(ctx, isDark)`.
+- **Shipped as GitHub release `v1.0.1`** (versionCode 2, versionName "1.0.1") -
+  first version bump since the initial `v1.0.0` open-source release. Debug build
+  had a real signature-mismatch snag: the test device had the release-signed APK
+  installed, so installing the debug build required an uninstall first (wipes
+  pairing/prefs, needs a fresh QR re-pair) - same signing-key gotcha noted in the
+  2026-07-09 distribution entry below, now hit from the opposite direction.
+  Website's Android download link (`Download.jsx`) updated to point at the new
+  release asset.
+- **Found and fixed a real gap: `Grep`/`Glob` tool calls were never routed through
+  AethelHook at all** - see gotcha #22 above for the full root cause and fix.
+  Live-verified via `hook_debug.log`/`api.log` right after the user ran
+  `install.ps1`.
+- **Rebuilt the Windows installer with the Grep/Glob fix and pushed it to the site
+  without bumping the version**, per explicit user request. Since `AethelHook.iss`'s
+  `AppVersion` is a separate, independent value from the Android app's version (it
+  stayed at `"1.0"`), the rebuilt `AethelHook-Setup.exe` was uploaded to the
+  *existing* `v1.0.0` GitHub release with `gh release upload v1.0.0 ... --clobber`,
+  overwriting the old binary in place rather than creating a new tag. The website's
+  Windows download link needed no change at all, since it already pointed at that
+  same `v1.0.0/AethelHook-Setup.exe` URL - verified post-upload via a direct HEAD
+  request confirming the new file size.
+- **Checked an SEO question and found nothing to fix**: user saw em dashes in
+  Google's cached SERP titles for aethelst8.com pages. Grepped both repos for the
+  literal character and every encoded form (`&mdash;`, `&#8212;`, `—`) and
+  curled the live site directly - all clean, hyphens only. The em dashes were from
+  Google's stale index snapshot predating the `fe257c0` fix from the prior session;
+  nothing to do here but wait for Google to recrawl (or use Search Console's
+  "Request Indexing").
+- **Both repos confirmed fully committed and pushed at end of session** (no
+  outstanding local changes, no unpushed commits on either `main`) - AethelHook at
+  `d910821`, aethelst8.github.io unchanged from its last push this session.
 
 **As of 2026-07-11 (website: new sections, Claude-app clarification, YouTube channel):**
 
