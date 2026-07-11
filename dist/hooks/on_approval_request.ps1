@@ -178,7 +178,7 @@ try {
     Log "API unreachable (no response) - removing AethelHook hooks to restore native Claude dialogs: $_"
 
     $settingsPath = "$env:USERPROFILE\.claude\settings.json"
-    $aethelAllow  = @("PowerShell(*)", "Write(*)", "Edit(*)", "Read(*)")
+    $aethelAllow  = @("PowerShell(*)", "Write(*)", "Edit(*)", "Read(*)", "Bash(*)", "Grep(*)", "Glob(*)")
     if (Test-Path $settingsPath) {
         try {
             $s = Get-Content $settingsPath -Raw -Encoding utf8 | ConvertFrom-Json
