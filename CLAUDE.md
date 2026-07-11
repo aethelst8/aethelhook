@@ -364,6 +364,46 @@ significant work session, the same way you'd update any other session/handoff fi
 Older entries can be trimmed once they're no longer relevant; this isn't a full
 changelog (see git history / memory for that), just enough to orient the next session.*
 
+**As of 2026-07-11 (website: new sections, Claude-app clarification, YouTube channel):**
+
+- **Added a Demo section and a Troubleshooting section to aethelst8.com** (separate
+  repo, `C:\aethelst8.github.io`), plus two new Features cards and a requirements
+  callout in Connect. Troubleshooting lists the four PowerShell service commands
+  (`Get-Service`/`Start-Service`/`Stop-Service`/`Restart-Service AethelHook`) kept
+  deliberately terse per explicit user feedback - just the command and a one-line
+  "use this when", no log path or `install.ps1` mention. Before writing the two new
+  feature claims (service auto-starts on boot and survives sleep/wake, phone
+  reconnects on its own; LAN/Tailscale IP and API token masked behind a
+  biometric/PIN reveal), ran a dedicated code-verification pass against
+  `install.ps1`/`AethelHook.iss` service registration, `AethelHookWebSocket.kt`'s
+  reconnect logic, and `BiometricAuth.kt` - all three confirmed true before the copy
+  went out (see [[project_aethelhook_website]] for the "burned by inaccurate copy
+  before" history this follows).
+- **Demo section trimmed same day.** Shipped first with three cards (phone
+  dashboard screenshot, a PC tray-app launch video, a "phone demo coming soon"
+  placeholder) using files the user dropped in `C:\AethelHook\screenshots\`
+  (`phoneDashboard.jpeg`, `pc_demo_vid.mp4`, copied into the site repo's
+  `public/media/`). User then asked to remove the video and placeholder cards -
+  they just created a YouTube channel and plan to host demo videos there instead
+  of serving a 32MB `.mp4` directly from the site repo. `public/media/pc-tray-demo.mp4`
+  is left in the repo unused for now, not deleted, pending that swap.
+- **Added an explicit "not the Claude app" compatibility clarification**, on both
+  aethelst8.com (Hero fine-print + first Features card) and `README.md`: AethelHook
+  only works with the **Claude Code** CLI and its VS Code extension, and the
+  **Codex** CLI and IDE, not the general-purpose Claude assistant app or claude.ai
+  (no hook mechanism to route through on those). Antigravity support was left
+  as-is in both places - this was purely about the Claude Code vs Claude-the-app
+  confusion, not a scope change.
+- **Footer copyright simplified** from "Copyright © 2026 ÆthelSt8 / All rights
+  reserved" to "2026 ÆthelSt8", per user request.
+- All website changes pushed to `aethelst8.github.io` main (`d734bcb`, `ca8e24e`,
+  `eb2ee80`); the README clarification pushed to the AethelHook repo main
+  (`95b3740`). GitHub Actions redeployed successfully after each push.
+
+**Not yet done:** the PC tray-app demo video and a phone demo recording still need
+to go up on the new YouTube channel and get linked back into the Demo section; a
+drafted channel description was handed to the user but not confirmed as posted.
+
 **As of 2026-07-10 (open sourced, public security review, aethelst8.com shipped):**
 
 - **AethelHook went from "considering open source" to actually public the same day.**
