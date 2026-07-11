@@ -24,6 +24,10 @@ It also lets you send prompts *to* your PC from your phone - kick off a headless
 Claude Code or Codex run in a known project directory and get the result pushed back,
 without touching the keyboard.
 
+**Note:** this means the Claude Code CLI and its VS Code extension, and the Codex CLI
+and IDE. It does not work with the regular Claude app or claude.ai - those are a
+different product with no hook mechanism to route through.
+
 ## Features
 
 - **Multi-IDE**: Claude Code, Codex, and Antigravity, each via their own native hook
