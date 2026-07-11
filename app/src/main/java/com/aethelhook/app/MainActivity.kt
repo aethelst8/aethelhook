@@ -315,6 +315,39 @@ fun NavPillItem(selected: Boolean, icon: ImageVector, label: String, onClick: ()
 // Dashboard
 // ──────────────────────────────────────────────────────────────────────────────
 
+// The launcher icon art is a black "8" glyph on a black background. For light mode,
+// swap the background to white in-place rather than shipping a second icon asset.
+private fun recolorBlackBackgroundToWhite(bmp: android.graphics.Bitmap) {
+    val w = bmp.width
+    val h = bmp.height
+    val pixels = IntArray(w * h)
+    bmp.getPixels(pixels, 0, w, 0, 0, w, h)
+    val tLow = 10.0
+    val tHigh = 60.0
+    for (i in pixels.indices) {
+        val p = pixels[i]
+        val a = (p ushr 24) and 0xFF
+        val r = (p ushr 16) and 0xFF
+        val g = (p ushr 8) and 0xFF
+        val b = p and 0xFF
+        val luminance = 0.299 * r + 0.587 * g + 0.114 * b
+        if (luminance >= tHigh) continue
+        val newR: Int
+        val newG: Int
+        val newB: Int
+        if (luminance <= tLow) {
+            newR = 255; newG = 255; newB = 255
+        } else {
+            val f = (luminance - tLow) / (tHigh - tLow)
+            newR = (r * f + 255 * (1 - f)).toInt().coerceIn(0, 255)
+            newG = (g * f + 255 * (1 - f)).toInt().coerceIn(0, 255)
+            newB = (b * f + 255 * (1 - f)).toInt().coerceIn(0, 255)
+        }
+        pixels[i] = (a shl 24) or (newR shl 16) or (newG shl 8) or newB
+    }
+    bmp.setPixels(pixels, 0, w, 0, 0, w, h)
+}
+
 @Composable
 fun DashboardScreen(ctx: Context, isDark: Boolean, onToggleTheme: () -> Unit) {
     val c = LocalAethelColors.current
@@ -359,11 +392,12 @@ fun DashboardScreen(ctx: Context, isDark: Boolean, onToggleTheme: () -> Unit) {
         // Header
         Row(verticalAlignment = Alignment.CenterVertically) {
             val ctx = LocalContext.current
-            val iconBitmap = remember(ctx) {
+            val iconBitmap = remember(ctx, isDark) {
                 val d = ContextCompat.getDrawable(ctx, R.mipmap.ic_launcher)!!
                 val bmp = android.graphics.Bitmap.createBitmap(176, 176, android.graphics.Bitmap.Config.ARGB_8888)
                 d.setBounds(0, 0, 176, 176)
                 d.draw(android.graphics.Canvas(bmp))
+                if (!isDark) recolorBlackBackgroundToWhite(bmp)
                 bmp.asImageBitmap()
             }
             Image(
@@ -870,7 +904,6 @@ fun SettingsScreen(ctx: Context, isDark: Boolean, onToggleTheme: () -> Unit) {
                 ) {
                     Column {
                         Text(if (isDark) "Dark Mode" else "Light Mode", color = c.textPrimary, fontSize = 14.sp, fontWeight = FontWeight.Medium)
-                        Text("Liquid glass theme", color = c.textSecondary, fontSize = 12.sp)
                     }
                     Switch(
                         checked = isDark,
