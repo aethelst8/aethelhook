@@ -1771,7 +1771,7 @@ static void RestoreClaudeCodeHooks()
         // Phase 2 (Session Access) chunked-progress heartbeat - fires after every tool
         // call, never blocks (on_tool_done.ps1 is fire-and-forget, short timeout).
         const string toolDoneCmd = @"powershell.exe -ExecutionPolicy Bypass -Command ""& 'C:\ProgramData\AethelHook\hooks\on_tool_done.ps1'""";
-        var aethelAllow = new[] { "PowerShell(*)", "Write(*)", "Edit(*)", "Read(*)", "Bash(*)" };
+        var aethelAllow = new[] { "PowerShell(*)", "Write(*)", "Edit(*)", "Read(*)", "Bash(*)", "Grep(*)", "Glob(*)" };
 
         JsonObject settings;
         if (File.Exists(settingsPath))
@@ -1821,6 +1821,8 @@ static void RestoreClaudeCodeHooks()
                 MakeMatcherHook("Write", hookCmd),
                 MakeMatcherHook("Edit", hookCmd),
                 MakeMatcherHook("Read", hookCmd),
+                MakeMatcherHook("Grep", hookCmd),
+                MakeMatcherHook("Glob", hookCmd),
                 MakeMatcherHook("NotebookEdit", hookCmd),
                 MakeMatcherHook("CronCreate", hookCmd),
                 MakeMatcherHook("CronDelete", hookCmd),
@@ -1865,7 +1867,7 @@ static void RemoveClaudeCodeHooks()
         var settingsPath = FindClaudeSettingsPath();
         if (settingsPath == null || !File.Exists(settingsPath)) return;
 
-        var aethelAllow = new[] { "PowerShell(*)", "Write(*)", "Edit(*)", "Read(*)", "Bash(*)" };
+        var aethelAllow = new[] { "PowerShell(*)", "Write(*)", "Edit(*)", "Read(*)", "Bash(*)", "Grep(*)", "Glob(*)" };
         var settings = JsonNode.Parse(File.ReadAllText(settingsPath)) as JsonObject;
         if (settings == null) return;
 
