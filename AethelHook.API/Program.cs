@@ -1530,6 +1530,9 @@ static string LoadOrCreateApiToken()
     // next service restart instead of needing a token reset (which would force every
     // paired device to re-pair).
     var realUserSid = FindRealUserSid();
+    Console.WriteLine(realUserSid != null
+        ? $"[Security] Granting hook-script read access on api_token.txt to {realUserSid}"
+        : "[Security] Could not resolve a real user SID - api_token.txt will stay Administrators+SYSTEM only, hook scripts will fail to read it");
 
     if (File.Exists(path))
     {
@@ -1561,7 +1564,8 @@ static SecurityIdentifier? FindRealUserSid()
     if (!Directory.Exists(usersRoot)) return null;
 
     var skip = new[] { "Public", "Default", "Default User", "All Users" };
-    string? fallback = null;
+    string? fallbackDir = null;
+    string? preferredDir = null;
 
     foreach (var dir in Directory.GetDirectories(usersRoot))
     {
@@ -1569,21 +1573,43 @@ static SecurityIdentifier? FindRealUserSid()
         if (skip.Contains(name, StringComparer.OrdinalIgnoreCase)) continue;
         if (name.StartsWith("defaultuser", StringComparison.OrdinalIgnoreCase)) continue;
 
-        fallback ??= name;
+        fallbackDir ??= dir;
 
-        if (Directory.Exists(Path.Combine(dir, ".claude")) ||
-            Directory.Exists(Path.Combine(dir, ".codex")) ||
-            Directory.Exists(Path.Combine(dir, ".vscode", "extensions")))
+        if (preferredDir == null &&
+            (Directory.Exists(Path.Combine(dir, ".claude")) ||
+             Directory.Exists(Path.Combine(dir, ".codex")) ||
+             Directory.Exists(Path.Combine(dir, ".vscode", "extensions"))))
         {
-            try { return (SecurityIdentifier)new NTAccount(name).Translate(typeof(SecurityIdentifier)); }
-            catch { /* orphaned profile folder, no matching account - keep looking */ }
+            preferredDir = dir;
         }
     }
 
-    if (fallback != null)
+    var targetDir = preferredDir ?? fallbackDir;
+    return targetDir != null ? FindSidForProfileDir(targetDir) : null;
+}
+
+// Resolves a profile directory to its owning SID via the registry's ProfileList, not
+// NTAccount.Translate(folderName) - a Microsoft-account sign-in's profile folder name
+// (derived from the account's local-part/display name) is very often NOT a resolvable
+// local logon name at all, so that approach throws (caught, silently returns null) on
+// exactly the kind of PC most likely to differ from this dev machine's local-account
+// setup. ProfileList is keyed by SID with a ProfileImagePath we can match directly,
+// which works the same regardless of account type (local, Microsoft, domain-joined).
+static SecurityIdentifier? FindSidForProfileDir(string profileDir)
+{
+    using var profileList = Microsoft.Win32.Registry.LocalMachine.OpenSubKey(
+        @"SOFTWARE\Microsoft\Windows NT\CurrentVersion\ProfileList");
+    if (profileList == null) return null;
+
+    foreach (var sidString in profileList.GetSubKeyNames())
     {
-        try { return (SecurityIdentifier)new NTAccount(fallback).Translate(typeof(SecurityIdentifier)); }
-        catch { /* no resolvable account at all */ }
+        using var sub = profileList.OpenSubKey(sidString);
+        var imagePath = sub?.GetValue("ProfileImagePath") as string;
+        if (imagePath == null) continue;
+        if (!string.Equals(imagePath.TrimEnd('\\'), profileDir.TrimEnd('\\'), StringComparison.OrdinalIgnoreCase))
+            continue;
+        try { return new SecurityIdentifier(sidString); }
+        catch { return null; }
     }
     return null;
 }
