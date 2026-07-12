@@ -428,6 +428,41 @@ security work since done - see README.md instead).
        exactly this "raw IInspectable* to specific projected type" scenario.
     Live-verified end-to-end after all six fixes: Hello prompt appears, PIN entry
     succeeds, `RequestVerificationForWindowAsync` resolves to `Verified`.
+25. **The 2026-07-10 pre-release security fix that locked `api_token.txt` down to
+    Administrators+SYSTEM (`CryptoUtil.RestrictToAdminSystem`, see gotcha #17's
+    entry in the security-review work) broke every PowerShell hook script on any
+    PC where that file gets freshly created - i.e. every real end-user install,
+    just not the dev machine.** Every hook script across all three IDEs reads
+    `api_token.txt` directly as the plain interactive user, not SYSTEM and not
+    elevated - and a non-elevated process's UAC-filtered token marks the
+    Administrators SID "deny only", so an Administrators-only ACE doesn't grant
+    it access even when that account is a local admin. Confirmed live: reported
+    as "Codex hooks not firing on another PC" - `PreToolUse` returned "hook
+    exited with code 1" (an uncaught `Get-Content` Access Denied terminating the
+    script outside any try/catch), `Stop` showed no error but never reached the
+    phone (the detached `notify_async.ps1` hit the same read failure silently in
+    the background). Not Codex-specific - Claude Code and Antigravity's copies
+    read the same file the same way and would fail identically. Never surfaced
+    on the dev machine because `LoadOrCreateApiToken`'s "file already exists"
+    branch never re-applied the ACL, so a token file predating the 2026-07-10 fix
+    just kept its original, more permissive ACL forever. Fix: added
+    `FindRealUserSid()` (same "scan `C:\Users\*`" pattern as
+    `FindClaudeCliInfo`/`FindCodexCliInfo`) and grant that one resolved account
+    explicit Read on `api_token.txt` - deliberately not opened to every local
+    account (`Authenticated Users`/`Everyone`), which would undo the original
+    fix's actual threat model (other unrelated local Windows accounts reading a
+    shared secret). `RestrictToAdminSystem` gained an optional `extraReadSid`
+    parameter, only ever passed for `api_token.txt` - every other file it locks
+    down (TLS cert, `devices.json`, `active_device.json`, `project_state.json`)
+    stays Administrators+SYSTEM only, since only the service itself ever needs
+    to read those. The ACL is now reapplied on every startup, not just on first
+    token creation, so an already-broken install self-heals on a plain service
+    restart - no token reset, no forced re-pair. Rebuilt and reuploaded the
+    installer the same day (`AppVersion` stayed at `1.1`, existing-release
+    `--clobber` reupload, same convention as the 2026-07-11 Grep/Glob fix).
+    **Not yet live-verified on the originally-affected PC** - it needs the
+    rebuilt installer reinstalled there and a real Codex `PreToolUse`/`Stop`
+    round-trip retried.
 
 ## Key file paths
 
@@ -468,6 +503,26 @@ dotnet publish AethelHook.Tray\AethelHook.Tray.csproj -c Release -r win-x64 --se
 significant work session, the same way you'd update any other session/handoff file.
 Older entries can be trimmed once they're no longer relevant; this isn't a full
 changelog (see git history / memory for that), just enough to orient the next session.*
+
+**As of 2026-07-12 (api_token.txt ACL fix - hooks failing on other PCs):**
+
+- **Fixed a real bug found via a second-PC install: Codex `PreToolUse` returned
+  "hook exited with code 1", `Stop` fired silently and never reached the phone.**
+  Full root cause and fix are gotcha #25 above - the 2026-07-10 security fix that
+  locked `api_token.txt` to Administrators+SYSTEM broke every hook script's direct
+  read of that file on any freshly-created install, since hook scripts run as the
+  plain (often non-elevated) interactive user, not Codex-specific despite how it
+  was first reported. Fix grants the resolved real-user account explicit Read via
+  a new `FindRealUserSid()` helper, reapplied every startup so an already-broken
+  install self-heals via `install.ps1`/service restart, no token reset needed.
+- **Rebuilt and reuploaded the installer the same session** (`AppVersion` stayed
+  `1.1`, existing `v1.0.0` GitHub release, `--clobber` reupload - confirmed via
+  `gh release view v1.0.0` showing a same-day asset timestamp - same convention as
+  the 2026-07-11 Grep/Glob fix). `dotnet build`/`install.ps1` also run on the dev
+  machine.
+- **Not yet done:** the originally-affected PC still needs the rebuilt installer
+  reinstalled and a real Codex `PreToolUse`/`Stop` retry to confirm this is fully
+  closed out.
 
 **As of 2026-07-12 (Windows Hello pairing gate shipped as v1.0.3 / installer 1.1,
 privacy policy + demo videos + social links added to the website):**

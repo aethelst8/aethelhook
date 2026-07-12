@@ -1520,19 +1520,74 @@ static string LoadOrCreateApiToken()
     var dir  = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.CommonApplicationData), "AethelHook");
     Directory.CreateDirectory(dir);
     var path = Path.Combine(dir, "api_token.txt");
+
+    // Every PowerShell hook script (all three IDEs) reads this file directly, running as
+    // the ordinary interactive user - not SYSTEM, not elevated, even if that account is a
+    // local admin (a non-elevated process runs UAC's filtered token, which marks the
+    // Administrators SID "deny only", so an Administrators-only ACE doesn't grant it
+    // access either). Resolved once per startup and reapplied below even when the token
+    // file already exists, so an install that hit this before this fix self-heals on the
+    // next service restart instead of needing a token reset (which would force every
+    // paired device to re-pair).
+    var realUserSid = FindRealUserSid();
+
     if (File.Exists(path))
     {
         var t = File.ReadAllText(path).Trim();
-        if (t.Length == 64) return t;
+        if (t.Length == 64)
+        {
+            CryptoUtil.RestrictToAdminSystem(path, realUserSid);
+            return t;
+        }
     }
     var bytes = new byte[32];
     System.Security.Cryptography.RandomNumberGenerator.Fill(bytes);
     var token = Convert.ToHexString(bytes).ToLower();
     File.WriteAllText(path, token);
-    CryptoUtil.RestrictToAdminSystem(path);
+    CryptoUtil.RestrictToAdminSystem(path, realUserSid);
     Console.WriteLine($"[Security] New API token generated. Token file: {path}");
     return token;
 }
+
+// Same "scan C:\Users\* for a real profile" pattern as FindClaudeCliInfo/FindCodexCliInfo
+// (this runs as SYSTEM, so Environment.SpecialFolder.UserProfile resolves to the system
+// profile, not a real account). Prefers whichever profile actually has one of the IDEs
+// this project hooks into - the account that runs the hook scripts, not just any leftover
+// profile folder - and falls back to the first non-special one if none match.
+#pragma warning disable CA1416 // this app only ever runs on Windows (LocalSystem service)
+static SecurityIdentifier? FindRealUserSid()
+{
+    var usersRoot = @"C:\Users";
+    if (!Directory.Exists(usersRoot)) return null;
+
+    var skip = new[] { "Public", "Default", "Default User", "All Users" };
+    string? fallback = null;
+
+    foreach (var dir in Directory.GetDirectories(usersRoot))
+    {
+        var name = Path.GetFileName(dir);
+        if (skip.Contains(name, StringComparer.OrdinalIgnoreCase)) continue;
+        if (name.StartsWith("defaultuser", StringComparison.OrdinalIgnoreCase)) continue;
+
+        fallback ??= name;
+
+        if (Directory.Exists(Path.Combine(dir, ".claude")) ||
+            Directory.Exists(Path.Combine(dir, ".codex")) ||
+            Directory.Exists(Path.Combine(dir, ".vscode", "extensions")))
+        {
+            try { return (SecurityIdentifier)new NTAccount(name).Translate(typeof(SecurityIdentifier)); }
+            catch { /* orphaned profile folder, no matching account - keep looking */ }
+        }
+    }
+
+    if (fallback != null)
+    {
+        try { return (SecurityIdentifier)new NTAccount(fallback).Translate(typeof(SecurityIdentifier)); }
+        catch { /* no resolvable account at all */ }
+    }
+    return null;
+}
+#pragma warning restore CA1416
 
 // Returns the Tailscale IP (100.x.x.x) if Tailscale is running, otherwise null.
 static string? GetTailscaleIpAddress()
@@ -2283,7 +2338,7 @@ public static class CryptoUtil
     // other local Windows account (no admin rights needed) could read every paired device's
     // bearer token or the TLS private key straight off disk.
 #pragma warning disable CA1416 // this app only ever runs on Windows (LocalSystem service)
-    public static void RestrictToAdminSystem(string path)
+    public static void RestrictToAdminSystem(string path, SecurityIdentifier? extraReadSid = null)
     {
         try
         {
@@ -2295,6 +2350,15 @@ public static class CryptoUtil
             security.AddAccessRule(new FileSystemAccessRule(
                 new SecurityIdentifier(WellKnownSidType.LocalSystemSid, null),
                 FileSystemRights.FullControl, AccessControlType.Allow));
+            // api_token.txt is the one file here a hook script (running as the real
+            // interactive user, not SYSTEM) must read directly - grant that one account
+            // Read explicitly rather than opening the file to every local account again
+            // (the vulnerability this lockdown exists to close - see the call site).
+            if (extraReadSid != null)
+            {
+                security.AddAccessRule(new FileSystemAccessRule(
+                    extraReadSid, FileSystemRights.Read, AccessControlType.Allow));
+            }
             new FileInfo(path).SetAccessControl(security);
         }
         catch (Exception ex)
