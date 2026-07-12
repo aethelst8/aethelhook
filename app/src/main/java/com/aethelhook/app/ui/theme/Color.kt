@@ -40,8 +40,8 @@ val DarkPalette = AethelColorPalette(
     glassStart    = Color(0x08FFFFFF),
     glassEnd      = Color(0x03FFFFFF),
     glassStroke   = Color(0x28FFFFFF),
-    blobA         = Color(0x308B5CF6),
-    blobB         = Color(0x1A00CFFF),
+    blobA         = Color.Transparent,
+    blobB         = Color.Transparent,
     isDark        = true
 )
 
