@@ -33,9 +33,10 @@
             <ListView x:Name="DeviceList" Margin="0,6,0,0">
                 <ListView.View>
                     <GridView>
-                        <GridViewColumn Header="Label" Width="90" DisplayMemberBinding="{Binding Label}" />
-                        <GridViewColumn Header="Token" Width="120" DisplayMemberBinding="{Binding MaskedToken}" />
-                        <GridViewColumn Header="Paired" Width="120" DisplayMemberBinding="{Binding PairedAt}" />
+                        <GridViewColumn Header="Label" Width="70" DisplayMemberBinding="{Binding Label}" />
+                        <GridViewColumn Header="Status" Width="60" DisplayMemberBinding="{Binding StatusText}" />
+                        <GridViewColumn Header="Token" Width="100" DisplayMemberBinding="{Binding MaskedToken}" />
+                        <GridViewColumn Header="Paired" Width="110" DisplayMemberBinding="{Binding PairedAt}" />
                         <GridViewColumn Header="" Width="70">
                             <GridViewColumn.CellTemplate>
                                 <DataTemplate>

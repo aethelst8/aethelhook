@@ -102,40 +102,19 @@ app.Map("/ws", async context =>
     using var ws = await context.WebSockets.AcceptWebSocketAsync();
     Console.WriteLine($"[WS] Phone connected from {context.Connection.RemoteIpAddress}");
 
-    // If a DIFFERENT device already holds the connection, don't silently evict it -
-    // ask it to approve the hand-off first. Same-device reconnects (Wi-Fi flap, app
-    // restart) skip this entirely since GetOtherActiveConnection only returns a
-    // conflict when the token differs.
+    // A DIFFERENT device already holding the connection at this point can only be the
+    // previously-active phone that just got superseded by a new Hello-gated pairing
+    // (the token check above already rejected anything that isn't the current active
+    // device) - so it's a one-way FYI, not a decision to ask for. Same-device
+    // reconnects (Wi-Fi flap, app restart) skip this entirely since
+    // GetOtherActiveConnection only returns a conflict when the token differs.
     var otherConn = WsClientStore.GetOtherActiveConnection(queryToken);
     if (otherConn != null)
     {
-        var newLabel = DeviceRegistry.GetLabelByToken(queryToken) ?? "Unknown device";
-        var tempConn = new WsConnection(ws, queryToken);
-        await tempConn.TrySendAsync(JsonSerializer.Serialize(new
-        {
-            type = "transfer_pending",
-            message = "Waiting for approval from your other connected device..."
-        }));
-
-        Console.WriteLine($"[WS] Transfer requested by '{newLabel}' - asking currently-connected device");
-        var approved = await TransferStore.RequestTransferAsync(otherConn, newLabel);
-        if (!approved)
-        {
-            Console.WriteLine($"[WS] Transfer denied for '{newLabel}'");
-            await tempConn.TrySendAsync(JsonSerializer.Serialize(new
-            {
-                type = "transfer_denied",
-                message = "Connection request denied - your other device is still connected."
-            }));
-            await ws.CloseAsync(WebSocketCloseStatus.PolicyViolation, "Transfer denied", CancellationToken.None);
-            return;
-        }
-
-        Console.WriteLine($"[WS] Transfer approved for '{newLabel}'");
         await otherConn.TrySendAsync(JsonSerializer.Serialize(new
         {
-            type = "transfer_approved",
-            message = $"Connection transferred to '{newLabel}'."
+            type = "connection_transferred",
+            message = "A new device was authorized on your PC - this connection has ended."
         }));
     }
 
@@ -255,13 +234,6 @@ app.Map("/ws", async context =>
 
                     // Ack back to the phone
                     await conn.TrySendAsync(JsonSerializer.Serialize(new { type = "ack", session_id = sessionId, kind = "plan_review_decision" }));
-                }
-                else if (root.TryGetProperty("type", out var t4) && t4.GetString() == "transfer_decision")
-                {
-                    var requestId = root.GetProperty("request_id").GetString() ?? "";
-                    var approve   = root.TryGetProperty("approve", out var a) && a.GetBoolean();
-                    TransferStore.SetDecision(requestId, approve);
-                    Console.WriteLine($"[WS] Transfer decision: {(approve ? "approved" : "denied")} for request {requestId}");
                 }
             }
             catch (Exception ex)
@@ -1467,7 +1439,15 @@ app.MapPost("/pair/claim", (HttpContext ctx, PairClaimRequest request) =>
 app.MapGet("/pair/devices", (HttpContext ctx) =>
 {
     if (!IsLocalRequest(ctx)) return Results.StatusCode(403);
-    return Results.Ok(DeviceRegistry.List());
+    var rows = DeviceRegistry.List().Select(d => new
+    {
+        d.Id,
+        d.Token,
+        d.Label,
+        d.PairedAt,
+        IsActive = DeviceRegistry.IsActivePhoneToken(d.Token)
+    });
+    return Results.Ok(rows);
 });
 
 app.MapDelete("/pair/devices/{id}", (HttpContext ctx, string id) =>
@@ -2286,47 +2266,6 @@ public static class DecisionStore
 }
 
 
-// Gates a connection hand-off between two different paired devices: the phone
-// currently holding /ws must explicitly approve before a different device's
-// connection attempt is allowed to evict it. Same TaskCompletionSource-keyed-by-id
-// pattern as DecisionStore/PlanReviewStore above.
-public static class TransferStore
-{
-    private static readonly ConcurrentDictionary<Guid, TaskCompletionSource<bool>> PendingDecisions = new();
-
-    public static async Task<bool> RequestTransferAsync(WsConnection existing, string newDeviceLabel)
-    {
-        var requestId = Guid.NewGuid();
-        var tcs = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
-        PendingDecisions[requestId] = tcs;
-
-        var sent = await existing.TrySendAsync(JsonSerializer.Serialize(new
-        {
-            type = "transfer_request",
-            request_id = requestId.ToString(),
-            device_label = newDeviceLabel
-        }));
-        if (!sent)
-        {
-            // Existing device is unreachable (dead/half-open socket) - no one to ask,
-            // so don't block a legitimate new pairing forever.
-            PendingDecisions.TryRemove(requestId, out _);
-            return true;
-        }
-
-        using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(30));
-        cts.Token.Register(() => tcs.TrySetResult(false)); // fail closed on timeout
-        try { return await tcs.Task; }
-        finally { PendingDecisions.TryRemove(requestId, out _); }
-    }
-
-    public static void SetDecision(string requestId, bool approve)
-    {
-        if (Guid.TryParse(requestId, out var id) && PendingDecisions.TryGetValue(id, out var tcs))
-            tcs.TrySetResult(approve);
-    }
-}
-
 public record DeviceRecord(Guid Id, string Token, string Label, DateTime PairedAt);
 
 public static class CryptoUtil
@@ -2376,11 +2315,40 @@ public static class DeviceRegistry
     private static string DevicesPath => Path.Combine(
         Environment.GetFolderPath(Environment.SpecialFolder.CommonApplicationData), "AethelHook", "devices.json");
 
+    // The single phone device currently authorized to hold the live /ws connection
+    // (and, per IsValidToken below, to use any phone-facing endpoint at all) - set
+    // only via a Hello-gated Pair New Device ceremony (PairingStore.TryClaim), never
+    // implicitly. Every other paired phone token is inert "history" until it goes
+    // through that ceremony again. Kept in its own small file, not devices.json,
+    // so the existing bare-array devices.json format doesn't need to change shape.
+    private static string? _activePhoneToken;
+    private static string ActiveTokenPath => Path.Combine(
+        Environment.GetFolderPath(Environment.SpecialFolder.CommonApplicationData), "AethelHook", "active_device.json");
+
+    // The literal contents of api_token.txt - PowerShell hook scripts read this file
+    // directly and send it as X-AethelHook-Token, so this is the actual credential
+    // that must always work, independent of whatever Label its devices.json entry
+    // happens to carry. Confirmed live: on an install old enough to predate the
+    // "legacy" migration path ever running, this exact token was stored as a plain
+    // "phone" device (paired long before per-device tokens existed) - a Label-based
+    // exemption alone missed it entirely and locked every hook script out the moment
+    // the active-phone restriction shipped. Comparing by value instead of by label
+    // is correct regardless of how (or whether) that record ever got labeled.
+    private static string? _legacyToken;
+
     // Loads devices.json, or seeds it with the legacy shared token (via the given
     // fallback loader) the very first time this runs so an already-paired phone
     // doesn't need to re-pair.
     public static void Initialize(Func<string> loadLegacyToken)
     {
+        _legacyToken = loadLegacyToken();
+
+        if (File.Exists(ActiveTokenPath))
+        {
+            try { _activePhoneToken = JsonDocument.Parse(File.ReadAllText(ActiveTokenPath)).RootElement.GetProperty("activeToken").GetString(); }
+            catch (Exception ex) { Console.WriteLine($"[DeviceRegistry] Failed to load active_device.json: {ex.Message}"); }
+        }
+
         if (File.Exists(DevicesPath))
         {
             try
@@ -2396,17 +2364,56 @@ public static class DeviceRegistry
             }
         }
 
-        var legacyToken = loadLegacyToken();
         var legacyId = Guid.NewGuid();
-        _devices[legacyId] = new DeviceRecord(legacyId, legacyToken, "legacy", DateTime.UtcNow);
+        _devices[legacyId] = new DeviceRecord(legacyId, _legacyToken, "legacy", DateTime.UtcNow);
         Save();
     }
 
+    // Called only from PairingStore.TryClaim, right after a new phone finishes a
+    // Hello-gated pairing ceremony - the sole place trust is granted.
+    public static void SetActivePhone(string token)
+    {
+        _activePhoneToken = token;
+        SaveActiveToken();
+    }
+
+    public static bool IsActivePhoneToken(string? token) =>
+        !string.IsNullOrEmpty(token) && _activePhoneToken != null && CryptoUtil.ConstantTimeEquals(token, _activePhoneToken);
+
+    private static void SaveActiveToken()
+    {
+        lock (_fileLock)
+        {
+            try
+            {
+                Directory.CreateDirectory(Path.GetDirectoryName(ActiveTokenPath)!);
+                File.WriteAllText(ActiveTokenPath, JsonSerializer.Serialize(new { activeToken = _activePhoneToken }));
+                CryptoUtil.RestrictToAdminSystem(ActiveTokenPath);
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"[DeviceRegistry] Failed to save active_device.json: {ex.Message}");
+            }
+        }
+    }
+
+    // The literal legacy token (api_token.txt, read directly by every PowerShell hook
+    // script) is always valid, checked by value rather than by a device's Label - see
+    // the comment on _legacyToken above for why. A matching "tray" token is likewise
+    // always valid (PC-side, not a phone). A matching "phone" token is only valid if
+    // it's the currently active one - every other paired phone is inert history until
+    // it goes through Pair New Device (Hello) again. This is the single choke point
+    // for both ValidateToken(ctx) and the /ws upgrade check, so this one change closes
+    // the gap for every phone-facing endpoint at once, not just /ws.
     public static bool IsValidToken(string? token)
     {
         if (string.IsNullOrEmpty(token)) return false;
+        if (_legacyToken != null && CryptoUtil.ConstantTimeEquals(token, _legacyToken)) return true;
         foreach (var d in _devices.Values)
-            if (CryptoUtil.ConstantTimeEquals(d.Token, token)) return true;
+        {
+            if (!CryptoUtil.ConstantTimeEquals(d.Token, token)) continue;
+            return d.Label != "phone" || IsActivePhoneToken(token);
+        }
         return false;
     }
 
@@ -2434,8 +2441,17 @@ public static class DeviceRegistry
 
     public static bool Revoke(Guid id)
     {
+        var token = GetToken(id);
         var removed = _devices.TryRemove(id, out _);
-        if (removed) Save();
+        if (removed)
+        {
+            if (token != null && IsActivePhoneToken(token))
+            {
+                _activePhoneToken = null;
+                SaveActiveToken();
+            }
+            Save();
+        }
         return removed;
     }
 
@@ -2572,6 +2588,11 @@ public static class PairingStore
 
         session.Claimed = true;
         var (id, token) = DeviceRegistry.Register("phone");
+        // This claim is only reachable with a sid+psk that only ever existed in a QR
+        // the Tray app generated - and Tray only generates that QR after a Hello-gated
+        // Pair New Device ceremony (or Hello being unavailable). So the moment a phone
+        // claims here, it's the one and only device authorized to be active.
+        DeviceRegistry.SetActivePhone(token);
         return (true, id.ToString(), token, null);
     }
 
