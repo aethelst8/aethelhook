@@ -480,16 +480,15 @@ security work since done - see README.md instead).
     added an explicit startup log line (`[Security] Granting hook-script read
     access...` / `Could not resolve a real user SID...`) so a future diagnostic
     session can read `api.log` directly instead of re-deriving this by theory.
-    **Not yet live-verified anywhere** - needs a fresh `install.ps1` on the dev
-    machine and a rebuilt installer reinstalled on the affected PC, then a real
-    Codex `PreToolUse`/`Stop` round-trip retried. The **separate** "Session
-    Access doesn't work on the other PC" report (phone-initiated headless
-    prompts) is *not* explained by this bug - `FindClaudeCliInfo`/
+    **Live-verified 2026-07-12 on the originally-affected PC** after the
+    registry-based fix, rebuilt installer, and reinstall - Codex `PreToolUse`/
+    `Stop` both confirmed working. The separately-reported "Session Access
+    doesn't work on the other PC" turned out to be fine too on the same
+    reinstall - never actually explained by this bug (`FindClaudeCliInfo`/
     `FindCodexCliInfo` locate the CLI by directory existence, not account-name
-    resolution, so they aren't subject to the same failure mode. Not yet
-    diagnosed - needs that PC's `api.log`/`hook_debug*.log` around a Session
-    Access attempt, and a description of what actually happens (error on phone,
-    silence, wrong project, etc.) before guessing further.
+    resolution, so weren't subject to this failure mode), most likely just
+    another symptom of that PC's install being in a broken/incomplete state
+    before this session's fixes landed. No separate root cause found or needed.
 
 ## Key file paths
 
@@ -542,14 +541,29 @@ changelog (see git history / memory for that), just enough to orient the next se
   was first reported. Fix grants the resolved real-user account explicit Read via
   a new `FindRealUserSid()` helper, reapplied every startup so an already-broken
   install self-heals via `install.ps1`/service restart, no token reset needed.
-- **Rebuilt and reuploaded the installer the same session** (`AppVersion` stayed
-  `1.1`, existing `v1.0.0` GitHub release, `--clobber` reupload - confirmed via
-  `gh release view v1.0.0` showing a same-day asset timestamp - same convention as
-  the 2026-07-11 Grep/Glob fix). `dotnet build`/`install.ps1` also run on the dev
-  machine.
-- **Not yet done:** the originally-affected PC still needs the rebuilt installer
-  reinstalled and a real Codex `PreToolUse`/`Stop` retry to confirm this is fully
-  closed out.
+- **First fix attempt didn't work** - reinstalled on the affected PC, no change.
+  Root cause: `FindRealUserSid()` resolved the SID by translating the profile
+  folder name as a local logon name (`NTAccount(name).Translate(...)`), which
+  silently fails for a Microsoft-account sign-in (the folder name isn't a
+  resolvable account name at all) - exactly the kind of setup likelier on a
+  different/friend's PC than this dev machine. Re-fixed by resolving the SID
+  from the registry's `ProfileList` (keyed by SID, matched via
+  `ProfileImagePath`) instead of guessing an account name - works regardless of
+  account type. Also added an explicit `[Security] Granting hook-script read
+  access...` / `Could not resolve a real user SID...` startup log line so this
+  doesn't need re-diagnosing by theory again.
+- **Rebuilt and reuploaded the installer twice this session** (`AppVersion`
+  stayed `1.1`, existing `v1.0.0` GitHub release, `--clobber` reupload each time
+  - confirmed via `gh release view v1.0.0` asset timestamps - same convention as
+  the 2026-07-11 Grep/Glob fix). `dotnet publish` (API + Tray) and
+  `ISCC.exe AethelHook.iss` run directly this time rather than by the user;
+  `install.ps1` still run by the user (elevated, can't be done from this session).
+- **Live-verified end-to-end on the originally-affected PC**: reinstalled the
+  second (registry-based) fix, Codex `PreToolUse`/`Stop` both confirmed working.
+  The separately-reported "Session Access doesn't work on that PC" turned out
+  fine too on the same reinstall - not actually caused by this bug (see gotcha
+  #25's closing note), most likely just another symptom of that PC's install
+  being in a broken/incomplete state beforehand. This closes out both reports.
 
 **As of 2026-07-12 (Windows Hello pairing gate shipped as v1.0.3 / installer 1.1,
 privacy policy + demo videos + social links added to the website):**
