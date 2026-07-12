@@ -37,6 +37,8 @@ keystore.properties
 *.log
 hook_debug*.txt
 before_snapshot.json
+/schema_baseline/
+/screenshots/
 
 # Experimental/local-only, not part of the shipped product
 /.agents/
