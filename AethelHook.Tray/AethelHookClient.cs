@@ -20,7 +20,7 @@ public record HookStatus(
     string Status,
     [property: JsonPropertyName("ws_connected")] bool WsConnected,
     [property: JsonPropertyName("gateway_active")] bool GatewayActive);
-public record DeviceInfo(string Id, string Token, string Label, DateTime PairedAt);
+public record DeviceInfo(string Id, string Token, string Label, DateTime PairedAt, bool IsActive);
 public record FeedItem(string SessionId, string ToolName, string CommandName, string Detail, DateTime CreatedAt, string? Decision, DateTime? DecidedAt);
 public record PairSession(string Sid, int ExpiresInSec);
 

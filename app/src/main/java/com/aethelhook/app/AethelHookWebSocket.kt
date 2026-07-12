@@ -380,19 +380,6 @@ object AethelHookWebSocket {
         Log.d(TAG, "Plan review decision sent over WS: session=$sessionId decision=$decision")
     }
 
-    // WS-only, no HTTP fallback: this device's own live socket is how the transfer
-    // request arrived, so if it's gone by the time the user taps a button, the
-    // server-side 30s timeout has already denied it.
-    fun sendTransferDecision(requestId: String, approve: Boolean) {
-        val json = JSONObject().apply {
-            put("type",       "transfer_decision")
-            put("request_id", requestId)
-            put("approve",    approve)
-        }.toString()
-        webSocket?.send(json)
-        Log.d(TAG, "Transfer decision sent over WS: request=$requestId approve=$approve")
-    }
-
     fun newBoundHttpClient(ctx: Context? = null): OkHttpClient {
         val bindIp = hotspotBindIp
         val token  = ctx?.let { AppPrefs.getApiToken(it) } ?: ""
@@ -427,13 +414,10 @@ object AethelHookWebSocket {
             "session_update"   -> sessionUpdates.value = obj
             "prompt_result"    -> sessionUpdates.value = obj
             "ack"              -> Log.d(TAG, "Decision ack'd: ${obj.optString("session_id")} → ${obj.optString("decision")}")
-            "transfer_request" -> showTransferRequestNotification(ctx, obj)
-            "transfer_pending" -> Log.d(TAG, "Transfer pending: ${obj.optString("message")}")
-            "transfer_denied"  -> {
+            "connection_transferred" -> {
                 connected = false
-                showInfoNotification(ctx, "Connection denied", obj.optString("message", "Your other device is still connected"))
+                showInfoNotification(ctx, "Connection ended", obj.optString("message", "A new device was authorized on your PC"))
             }
-            "transfer_approved" -> showInfoNotification(ctx, "Connection transferred", obj.optString("message", "This device has been disconnected"))
             else               -> Log.d(TAG, "Unknown WS type: ${obj.optString("type")}")
         }
     }
@@ -632,46 +616,6 @@ object AethelHookWebSocket {
                 .build()
         )
         Log.d(TAG, "Plan review notification shown for $sessionId (via $via)")
-    }
-
-    @android.annotation.SuppressLint("MissingPermission")
-    private fun showTransferRequestNotification(ctx: Context, obj: JSONObject) {
-        val requestId   = obj.optString("request_id")
-        val deviceLabel = obj.optString("device_label").ifBlank { "Unknown device" }
-
-        val nm = ctx.getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
-        nm.createNotificationChannel(
-            NotificationChannel("aethelhook_channel", "AethelHook Alerts", NotificationManager.IMPORTANCE_HIGH)
-        )
-
-        val notificationId = System.currentTimeMillis().toInt()
-
-        fun makeIntent(action: String) =
-            Intent(ctx, TransferDecisionReceiver::class.java).apply {
-                this.action = action
-                putExtra(TransferDecisionReceiver.EXTRA_REQUEST_ID,      requestId)
-                putExtra(TransferDecisionReceiver.EXTRA_NOTIFICATION_ID, notificationId)
-            }
-
-        val approvePi = PendingIntent.getBroadcast(ctx, notificationId,     makeIntent(TransferDecisionReceiver.ACTION_APPROVE), PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE)
-        val denyPi    = PendingIntent.getBroadcast(ctx, notificationId + 1, makeIntent(TransferDecisionReceiver.ACTION_DENY),    PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE)
-
-        NotificationManagerCompat.from(ctx).notify(
-            notificationId,
-            NotificationCompat.Builder(ctx, "aethelhook_channel")
-                .setContentTitle("New device wants to connect")
-                .setContentText("'$deviceLabel' wants to take over your AethelHook connection.")
-                .setStyle(NotificationCompat.BigTextStyle().bigText(
-                    "'$deviceLabel' wants to take over your AethelHook connection. Approving will disconnect this device."))
-                .setSmallIcon(R.drawable.ic_notification)
-                .setPriority(NotificationCompat.PRIORITY_MAX)
-                .setCategory(NotificationCompat.CATEGORY_CALL)
-                .setAutoCancel(true)
-                .addAction(android.R.drawable.ic_menu_send, "Approve", approvePi)
-                .addAction(android.R.drawable.ic_delete,    "Deny",    denyPi)
-                .build()
-        )
-        Log.d(TAG, "Transfer request notification shown for '$deviceLabel' (request $requestId)")
     }
 
     @android.annotation.SuppressLint("MissingPermission")

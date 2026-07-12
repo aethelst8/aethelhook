@@ -16,6 +16,8 @@ public class DeviceRow
     public string Label { get; set; } = "";
     public string MaskedToken { get; set; } = "";
     public string PairedAt { get; set; } = "";
+    public bool IsActive { get; set; }
+    public string StatusText => IsActive ? "Active" : "History";
 }
 
 public class FeedRow
@@ -113,7 +115,8 @@ public partial class MainWindow : Window
                 Id = d.Id,
                 Label = d.Label,
                 MaskedToken = d.Token.Length > 6 ? $"...{d.Token[^6..]}" : d.Token,
-                PairedAt = d.PairedAt.ToLocalTime().ToString("g")
+                PairedAt = d.PairedAt.ToLocalTime().ToString("g"),
+                IsActive = d.IsActive
             });
         }
     }
@@ -160,8 +163,16 @@ public partial class MainWindow : Window
         await RefreshDevicesAsync();
     }
 
-    private void PairNewDevice_Click(object sender, RoutedEventArgs e)
+    private async void PairNewDevice_Click(object sender, RoutedEventArgs e)
     {
+        var hwnd = new System.Windows.Interop.WindowInteropHelper(this).Handle;
+        var result = await WindowsHello.RequestAsync(hwnd, "Authorize a new device to connect to AethelHook");
+        if (result == WindowsHello.HelloResult.DeniedOrFailed)
+        {
+            MessageBox.Show("Not authorized - pairing cancelled.", "AethelHook", MessageBoxButton.OK, MessageBoxImage.Warning);
+            return;
+        }
+
         var win = new PairingWindow { Owner = this };
         win.ShowDialog();
         _ = RefreshDevicesAsync();

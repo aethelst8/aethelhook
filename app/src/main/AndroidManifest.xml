@@ -94,15 +94,6 @@
                 <action android:name="com.aethelhook.app.ACTION_DENY" />
             </intent-filter>
         </receiver>
-
-        <receiver
-            android:name=".TransferDecisionReceiver"
-            android:exported="false">
-            <intent-filter>
-                <action android:name="com.aethelhook.app.ACTION_TRANSFER_APPROVE" />
-                <action android:name="com.aethelhook.app.ACTION_TRANSFER_DENY" />
-            </intent-filter>
-        </receiver>
     </application>
 
 </manifest>
