@@ -460,9 +460,36 @@ security work since done - see README.md instead).
     restart - no token reset, no forced re-pair. Rebuilt and reuploaded the
     installer the same day (`AppVersion` stayed at `1.1`, existing-release
     `--clobber` reupload, same convention as the 2026-07-11 Grep/Glob fix).
-    **Not yet live-verified on the originally-affected PC** - it needs the
-    rebuilt installer reinstalled there and a real Codex `PreToolUse`/`Stop`
-    round-trip retried.
+    **First version of this fix didn't actually work** - reinstalled on the
+    originally-affected PC, no change. Root cause of *that*: the first
+    `FindRealUserSid()` resolved the SID via
+    `new NTAccount(profileFolderName).Translate(typeof(SecurityIdentifier))`,
+    which only works if the profile folder name happens to equal a resolvable
+    local logon name. A Microsoft-account sign-in's profile folder (derived from
+    the account's local-part/display name, e.g. `C:\Users\kabel`) is very often
+    **not** a resolvable account name at all - `Translate` throws
+    `IdentityNotMappedException`, silently caught, `FindRealUserSid()` returns
+    `null`, and the ACL grant is a no-op - reproducing the exact original bug
+    with zero visible difference. Exactly the kind of gap likelier to hit a
+    different/friend's PC (much more likely Microsoft-account-signed-in) than
+    this dev machine. Fix: resolve the SID from the registry instead of
+    guessing an account name - `HKLM\SOFTWARE\Microsoft\Windows NT\
+    CurrentVersion\ProfileList` is keyed by SID with a `ProfileImagePath` value,
+    so matching the discovered profile directory against that gives the real
+    SID regardless of account type (local, Microsoft, domain-joined). Also
+    added an explicit startup log line (`[Security] Granting hook-script read
+    access...` / `Could not resolve a real user SID...`) so a future diagnostic
+    session can read `api.log` directly instead of re-deriving this by theory.
+    **Not yet live-verified anywhere** - needs a fresh `install.ps1` on the dev
+    machine and a rebuilt installer reinstalled on the affected PC, then a real
+    Codex `PreToolUse`/`Stop` round-trip retried. The **separate** "Session
+    Access doesn't work on the other PC" report (phone-initiated headless
+    prompts) is *not* explained by this bug - `FindClaudeCliInfo`/
+    `FindCodexCliInfo` locate the CLI by directory existence, not account-name
+    resolution, so they aren't subject to the same failure mode. Not yet
+    diagnosed - needs that PC's `api.log`/`hook_debug*.log` around a Session
+    Access attempt, and a description of what actually happens (error on phone,
+    silence, wrong project, etc.) before guessing further.
 
 ## Key file paths
 
