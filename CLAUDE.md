@@ -16,9 +16,10 @@ security work since done - see README.md instead).
   Current status below). See "Critical gotchas" below - running as LocalSystem causes
   real, non-obvious bugs.
 - **`AethelHook.Tray/`** - WPF tray app, runs as the interactive user (not a service).
-  This is the official PC-side UI: status, gateway toggle, device pairing, live feed.
-  Anything needing to interact with the desktop must go through here, not the API
-  service (see Session 0 isolation below).
+  This is the official PC-side UI: status, gateway toggle, device pairing (now
+  gated by Windows Hello, see gotchas #23/#24), live feed. Anything needing to
+  interact with the desktop must go through here, not the API service (see
+  Session 0 isolation below).
 - **`app/`** - Android Kotlin/Compose app. 4 tabs: Dashboard, Session, History, Settings.
 - **Hooks** - PowerShell scripts per IDE: `.claude/hooks/` (Claude Code), `.codex/hooks/`
   (Codex), `.gemini/hooks/` (Antigravity). Dev copies live in the repo; the API's
@@ -345,6 +346,88 @@ security work since done - see README.md instead).
     2026-07-11: triggered a real `Grep` tool call after `install.ps1` redeployed,
     confirmed via `hook_debug.log`/`api.log` that it now posts an `APPROVAL_REQUEST` and
     routes to the phone exactly like a `Bash` call, with no native dialog appearing.
+23. **Trust must be granted at pairing time, not policed after the token already
+    exists.** The first same-day design for "only 1 phone connected at once" asked
+    the *currently-connected* phone to approve/deny a new device's WS connection
+    (`WsClientStore` transfer-approval). Live testing exposed the real gap: pairing
+    (QR scan) and that WS-layer approval are two separate things - a denied phone's
+    token was still fully valid for every other phone-facing endpoint (e.g. the
+    "Send Test Ping" button kept working via plain HTTP, confirmed live), since
+    nothing about a WS-level deny touches `DeviceRegistry.IsValidToken`. Replaced
+    entirely (2026-07-12) with a PC-side gate: pairing now requires **Windows Hello**
+    on the Tray app's "Pair New Device" button (see gotcha #24 for the interop
+    saga), and whichever device completes that ceremony becomes the sole
+    `DeviceRegistry._activePhoneToken` (set once, in `PairingStore.TryClaim` -
+    `SetActivePhone`). `IsValidToken` - the single choke point already used by
+    every phone-facing `ValidateToken(ctx)` call and the `/ws` upgrade check -
+    now rejects a `"phone"`-labeled device unless it's the current active one;
+    every other paired phone is inert "history" until it re-pairs through Hello
+    again. Whatever device gets displaced just gets a one-way `connection_transferred`
+    notice (no buttons, no decision to wait on), sent only once the new device's
+    `/ws` connection actually registers, not the instant Hello succeeds.
+    **Self-gating trap hit while shipping this**: the dev machine's hook scripts
+    authenticate via `api_token.txt` (read directly by every `.ps1` hook), which
+    turned out to be stored in `devices.json` as a plain `"phone"`-labeled device
+    (predating the `"legacy"` migration path ever running on this install) - so the
+    moment the active-token restriction shipped, `IsValidToken` rejected it too,
+    silently locking this very session's own tool-call approvals (every Bash/Grep
+    call failed with `"AethelHook API error"` until diagnosed via `api.log`). Fix:
+    `IsValidToken` now checks the token's literal *value* against `api_token.txt`'s
+    contents (cached as `_legacyToken` at `Initialize()`) before falling back to the
+    label-based check, correct regardless of how a given install's legacy device
+    happened to get labeled historically. Live-verified end-to-end after the fix:
+    Hello prompt gates a real pairing, hook-script approvals keep working
+    throughout.
+24. **`[ComImport]` cannot marshal an `IInspectable`-derived WinRT interface at all
+    in .NET Core, not just specific parameters on it** - confirmed live building
+    `AethelHook.Tray\WindowsHello.cs` (Windows Hello gate for "Pair New Device",
+    see gotcha #23), six live-iteration rounds to get right, each with a different
+    root cause:
+    1. `[MarshalAs(UnmanagedType.HString)]` throws `MarshalDirectiveException` on
+       *any* interop signature using it (P/Invoke or COM) - .NET Core's marshaler
+       doesn't implement HSTRING marshaling at all. Fix: build/free HSTRINGs
+       manually via raw `combase.dll` exports (`WindowsCreateString`/
+       `WindowsDeleteString`), pass as plain `IntPtr`.
+    2. `[MarshalAs(UnmanagedType.IInspectable)]` on an `out object` parameter throws
+       `"Marshalling as IInspectable is not supported in the .NET runtime"` -
+       same story, different type. Fix: get the raw `IntPtr` instead, wrap via
+       `Marshal.GetObjectForIUnknown` (classic COM interop, unaffected).
+    3. `IUserConsentVerifierInterop` derives from **`IInspectable`, not plain
+       `IUnknown`** - not guessable from a hand-written `[ComImport]` declaration,
+       only confirmed via Microsoft's own docs after two wrong guesses.
+       `IInspectable` inserts 3 extra vtable slots (`GetIids`/`GetRuntimeClassName`/
+       `GetTrustLevel`) between `IUnknown` and the interface's own method -
+       declaring `InterfaceIsIUnknown` calls the *wrong vtable slot entirely*,
+       which doesn't throw a catchable exception, it silently **crashes the whole
+       process** (confirmed live, an uncatchable access-violation-class native
+       crash, not a managed exception - `try`/`catch` cannot stop it).
+    4. The real native signature also has a `REFIID riid` parameter (the caller-
+       specified IID of the desired output interface) that a first attempt
+       omitted entirely, compounding the wrong-vtable-slot crash with a
+       parameter-count mismatch too.
+    5. Even with the right vtable slot, declaring `InterfaceType(
+       ComInterfaceType.InterfaceIsIInspectable)` on a `[ComImport]` interface and
+       casting via `Marshal.GetObjectForIUnknown` still throws the same
+       `"Marshalling as IInspectable is not supported"` error as #2, this time for
+       the interface *itself*, not a parameter - `[ComImport]` fundamentally
+       cannot wrap any IInspectable-derived interface in .NET Core, regardless of
+       which specific member is the problem. Fix: skip `[ComImport]` entirely -
+       read the object's vtable pointer via `Marshal.ReadIntPtr`, resolve the
+       target slot's function pointer, and invoke it via
+       `Marshal.GetDelegateForFunctionPointer` (the same low-level technique
+       CsWinRT's own generated code uses internally, just hand-rolled here for
+       this one non-projected interface).
+    6. `IAsyncOperation<UserConsentVerificationResult>` (the call's return value)
+       is a parameterized WinRT generic - computing its IID by hand
+       (`WinRT.GuidGenerator.GetGUID(typeof(...))`, then separately
+       `typeof(...).GUID` via reflection) produced two different values, both
+       rejected by the OS with `E_NOINTERFACE` (0x80004002). Fix: request the
+       fixed, universal `IInspectable` IID (`AF86E2E0-B12D-4c6a-9C5A-D7AA65101E90`)
+       instead of guessing the parameterized-generic one, then wrap the result via
+       `WinRT.MarshalInspectable<T>.FromAbi`, CsWinRT's own supported helper for
+       exactly this "raw IInspectable* to specific projected type" scenario.
+    Live-verified end-to-end after all six fixes: Hello prompt appears, PIN entry
+    succeeds, `RequestVerificationForWindowAsync` resolves to `Verified`.
 
 ## Key file paths
 
@@ -359,6 +442,7 @@ security work since done - see README.md instead).
 | `AethelHook.iss` / `dist\install_hooks.ps1` | End-user installer (Inno Setup) + first-install hook bootstrap |
 | `.codex\hooks\notify_async.ps1` (+ `dist\hooks\codex\`, live) | Detached process launched by `on_agent_done.ps1` to actually POST the Stop-hook notification - see gotcha #15 |
 | `app\...\MainActivity.kt`, `SessionActivity.kt`, `AethelHookWebSocket.kt` | Android - nav/dashboard, Session Access tab, WS client |
+| `AethelHook.Tray\WindowsHello.cs` | Windows Hello gate for "Pair New Device" - raw WinRT vtable interop, see gotcha #24 |
 
 ## Build / deploy quick reference
 
@@ -384,6 +468,57 @@ dotnet publish AethelHook.Tray\AethelHook.Tray.csproj -c Release -r win-x64 --se
 significant work session, the same way you'd update any other session/handoff file.
 Older entries can be trimmed once they're no longer relevant; this isn't a full
 changelog (see git history / memory for that), just enough to orient the next session.*
+
+**As of 2026-07-12 (Windows Hello pairing gate shipped as v1.0.3 / installer 1.1,
+privacy policy + demo videos + social links added to the website):**
+
+- **Replaced the same-day phone-approval connection-transfer feature with a PC-side
+  Windows Hello pairing gate.** Full design and the self-gating lockout hit while
+  shipping it are gotcha #23; the six-round WinRT interop saga to actually get
+  Windows Hello working from a plain WPF app (`AethelHook.Tray\WindowsHello.cs`) is
+  gotcha #24. Net result: pairing a new device now requires Windows Hello
+  (PIN/fingerprint/face) on the PC before a QR code even appears; only one phone is
+  ever the active connection; every other paired phone is inert "history" until it
+  re-pairs. Falls back to no gate if Windows Hello isn't configured on the PC at
+  all, per explicit product decision, rather than blocking pairing outright.
+- **Shipped as Android `v1.0.3`** (versionCode 4) **and Windows installer
+  `AppVersion` 1.0 → 1.1** (same day, both bumped per explicit request - previous
+  installer-only rebuilds had left `AppVersion` at a fixed `"1.0"`). Windows
+  installer re-uploaded to the existing `v1.0.0` GitHub release (`--clobber`, same
+  convention as before); Android got a genuinely new tagged release,
+  `v1.0.3/aethelhook_v1.0.3.apk`.
+- **aethelst8.com got four separate additions this session**, all pushed:
+  1. A new homepage section (`PairingSecurity.jsx`) explaining the Windows Hello
+     gate with a real screenshot, plus updated Setup/Features copy and two of the
+     three Guides pages, since they still described the old QR-only pairing flow.
+  2. A privacy policy page (`/privacy/`), written from scratch rather than adapting
+     a generated one - the generated draft (privacypolicygenerator.info) invented a
+     full Cookies/Tracking section, account management, marketing use, and
+     24-month retention schedules, none of which apply (no accounts, no cookies,
+     no analytics, no server AethelSt8 operates anywhere). Wired up the same way as
+     the Guides pages (static `index.html` shell + `src/pages/*.jsx` + entry file +
+     registered in `vite.config.js`/`scripts/prerender.mjs`/`entry-server.jsx`).
+  3. Both demo videos embedded in the Demo section as plain YouTube iframes (not
+     served from the repo): the tray app demo at 16:9, the phone demo (uploaded as
+     a Short, recorded in portrait) at a 9:16 `aspect-ratio` variant so it renders
+     tall instead of getting letterboxed into the existing fixed-`max-height` frame
+     that assumed image/landscape content only.
+  4. Reddit/YouTube/Product Hunt icon links in the footer, path data pulled
+     directly from Simple Icons rather than reconstructed from memory. Initially
+     placed in the footer-links row, then moved next to the "2026 ÆthelSt8"
+     copyright line per follow-up request.
+  New standing workflow rule saved to memory
+  (`feedback_website_sync_after_installer_changes`): update the website's
+  installer links/versions/content in the same pass as any real installer change,
+  not as a separate follow-up to ask about.
+
+**Live-verified (2026-07-13):** the connection-transfer flow this whole redesign was
+built for - pairing a second phone while the first stays connected, the first
+getting the plain "Connection ended" notice, a "history" phone's reconnect attempt
+being silently rejected - user confirmed working perfectly. This closes out the
+last open item from the Windows Hello pairing gate work (gotchas #23/#24).
+
+**Not yet done:** a Reddit launch post is being planned, not yet drafted.
 
 **As of 2026-07-11 (Android UI fixes shipped as v1.0.1, Grep/Glob approval-gate gap
 fixed, Windows installer refreshed):**
