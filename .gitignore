@@ -39,6 +39,10 @@ hook_debug*.txt
 before_snapshot.json
 /schema_baseline/
 /screenshots/
+/ae_black.jpeg
+/ae_black_sqr.jpeg
+/ae_white.svg
+/ae_white_sqr.jpeg
 
 # Experimental/local-only, not part of the shipped product
 /.agents/
