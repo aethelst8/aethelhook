@@ -236,11 +236,15 @@ object AethelHookWebSocket {
 
             override fun onOpen(ws: WebSocket, response: Response) {
                 if (isStale(ws)) return
-                connected = true
+                // NOT "connected" yet - the raw socket handshake succeeds before the server
+                // has decided whether to register this connection (it may still be gated
+                // behind another device's transfer approval, see /ws in Program.cs). `connected`
+                // only flips true once the server's own "connected" message arrives below,
+                // confirming this socket was actually registered in WsClientStore.
                 consecutiveFailures = 0
                 connectionType = if (url.substringAfter("://").startsWith("100."))
                     ConnectionType.TAILSCALE else ConnectionType.LAN
-                Log.d(TAG, "Connected via ${connectionType.name} (${url.substringBefore("?")})")
+                Log.d(TAG, "Socket open via ${connectionType.name} (${url.substringBefore("?")}) - awaiting registration")
             }
 
             override fun onMessage(ws: WebSocket, text: String) {
@@ -415,7 +419,7 @@ object AethelHookWebSocket {
     private fun handleMessage(ctx: Context, text: String) {
         val obj = runCatching { JSONObject(text) }.getOrNull() ?: return
         when (obj.optString("type")) {
-            "connected"        -> Log.d(TAG, "Handshake OK: ${obj.optString("message")}")
+            "connected"        -> { connected = true; Log.d(TAG, "Registered: ${obj.optString("message")}") }
             "approval_request" -> showApprovalNotification(ctx, obj)
             "agent_done"       -> showDoneNotification(ctx, obj)
             "ask_question"     -> showQuestionNotification(ctx, obj)
@@ -425,7 +429,10 @@ object AethelHookWebSocket {
             "ack"              -> Log.d(TAG, "Decision ack'd: ${obj.optString("session_id")} → ${obj.optString("decision")}")
             "transfer_request" -> showTransferRequestNotification(ctx, obj)
             "transfer_pending" -> Log.d(TAG, "Transfer pending: ${obj.optString("message")}")
-            "transfer_denied"  -> showInfoNotification(ctx, "Connection denied", obj.optString("message", "Your other device is still connected"))
+            "transfer_denied"  -> {
+                connected = false
+                showInfoNotification(ctx, "Connection denied", obj.optString("message", "Your other device is still connected"))
+            }
             "transfer_approved" -> showInfoNotification(ctx, "Connection transferred", obj.optString("message", "This device has been disconnected"))
             else               -> Log.d(TAG, "Unknown WS type: ${obj.optString("type")}")
         }
