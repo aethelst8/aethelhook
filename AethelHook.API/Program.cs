@@ -102,6 +102,43 @@ app.Map("/ws", async context =>
     using var ws = await context.WebSockets.AcceptWebSocketAsync();
     Console.WriteLine($"[WS] Phone connected from {context.Connection.RemoteIpAddress}");
 
+    // If a DIFFERENT device already holds the connection, don't silently evict it -
+    // ask it to approve the hand-off first. Same-device reconnects (Wi-Fi flap, app
+    // restart) skip this entirely since GetOtherActiveConnection only returns a
+    // conflict when the token differs.
+    var otherConn = WsClientStore.GetOtherActiveConnection(queryToken);
+    if (otherConn != null)
+    {
+        var newLabel = DeviceRegistry.GetLabelByToken(queryToken) ?? "Unknown device";
+        var tempConn = new WsConnection(ws, queryToken);
+        await tempConn.TrySendAsync(JsonSerializer.Serialize(new
+        {
+            type = "transfer_pending",
+            message = "Waiting for approval from your other connected device..."
+        }));
+
+        Console.WriteLine($"[WS] Transfer requested by '{newLabel}' - asking currently-connected device");
+        var approved = await TransferStore.RequestTransferAsync(otherConn, newLabel);
+        if (!approved)
+        {
+            Console.WriteLine($"[WS] Transfer denied for '{newLabel}'");
+            await tempConn.TrySendAsync(JsonSerializer.Serialize(new
+            {
+                type = "transfer_denied",
+                message = "Connection request denied - your other device is still connected."
+            }));
+            await ws.CloseAsync(WebSocketCloseStatus.PolicyViolation, "Transfer denied", CancellationToken.None);
+            return;
+        }
+
+        Console.WriteLine($"[WS] Transfer approved for '{newLabel}'");
+        await otherConn.TrySendAsync(JsonSerializer.Serialize(new
+        {
+            type = "transfer_approved",
+            message = $"Connection transferred to '{newLabel}'."
+        }));
+    }
+
     // Register with a send-safe wrapper (serialises sends + 5s timeout per send)
     var conn = WsClientStore.Register(ws, queryToken);
 
@@ -218,6 +255,13 @@ app.Map("/ws", async context =>
 
                     // Ack back to the phone
                     await conn.TrySendAsync(JsonSerializer.Serialize(new { type = "ack", session_id = sessionId, kind = "plan_review_decision" }));
+                }
+                else if (root.TryGetProperty("type", out var t4) && t4.GetString() == "transfer_decision")
+                {
+                    var requestId = root.GetProperty("request_id").GetString() ?? "";
+                    var approve   = root.TryGetProperty("approve", out var a) && a.GetBoolean();
+                    TransferStore.SetDecision(requestId, approve);
+                    Console.WriteLine($"[WS] Transfer decision: {(approve ? "approved" : "denied")} for request {requestId}");
                 }
             }
             catch (Exception ex)
@@ -2142,6 +2186,18 @@ public static class WsClientStore
 
     public static bool HasClients => !_clients.IsEmpty;
 
+    // Returns an already-registered connection whose token differs from the incoming
+    // one - i.e. a genuine "different device" conflict, not the same device
+    // reconnecting (Wi-Fi flap, app restart). Null means it's safe to register the
+    // incoming connection immediately (no conflict).
+    public static WsConnection? GetOtherActiveConnection(string incomingToken)
+    {
+        foreach (var kv in _clients.ToList())
+            if (!CryptoUtil.ConstantTimeEquals(kv.Value.Token, incomingToken))
+                return kv.Value;
+        return null;
+    }
+
     public static WsConnection Register(WebSocket ws, string token)
     {
         // Single-user: evict stale connections so BroadcastAsync never sends doubles.
@@ -2230,6 +2286,47 @@ public static class DecisionStore
 }
 
 
+// Gates a connection hand-off between two different paired devices: the phone
+// currently holding /ws must explicitly approve before a different device's
+// connection attempt is allowed to evict it. Same TaskCompletionSource-keyed-by-id
+// pattern as DecisionStore/PlanReviewStore above.
+public static class TransferStore
+{
+    private static readonly ConcurrentDictionary<Guid, TaskCompletionSource<bool>> PendingDecisions = new();
+
+    public static async Task<bool> RequestTransferAsync(WsConnection existing, string newDeviceLabel)
+    {
+        var requestId = Guid.NewGuid();
+        var tcs = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+        PendingDecisions[requestId] = tcs;
+
+        var sent = await existing.TrySendAsync(JsonSerializer.Serialize(new
+        {
+            type = "transfer_request",
+            request_id = requestId.ToString(),
+            device_label = newDeviceLabel
+        }));
+        if (!sent)
+        {
+            // Existing device is unreachable (dead/half-open socket) - no one to ask,
+            // so don't block a legitimate new pairing forever.
+            PendingDecisions.TryRemove(requestId, out _);
+            return true;
+        }
+
+        using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(30));
+        cts.Token.Register(() => tcs.TrySetResult(false)); // fail closed on timeout
+        try { return await tcs.Task; }
+        finally { PendingDecisions.TryRemove(requestId, out _); }
+    }
+
+    public static void SetDecision(string requestId, bool approve)
+    {
+        if (Guid.TryParse(requestId, out var id) && PendingDecisions.TryGetValue(id, out var tcs))
+            tcs.TrySetResult(approve);
+    }
+}
+
 public record DeviceRecord(Guid Id, string Token, string Label, DateTime PairedAt);
 
 public static class CryptoUtil
@@ -2311,6 +2408,15 @@ public static class DeviceRegistry
         foreach (var d in _devices.Values)
             if (CryptoUtil.ConstantTimeEquals(d.Token, token)) return true;
         return false;
+    }
+
+    // Used to show a human-readable name in the connection-transfer prompt.
+    public static string? GetLabelByToken(string? token)
+    {
+        if (string.IsNullOrEmpty(token)) return null;
+        foreach (var d in _devices.Values)
+            if (CryptoUtil.ConstantTimeEquals(d.Token, token)) return d.Label;
+        return null;
     }
 
     public static (Guid id, string token) Register(string label)
