@@ -1,5 +1,5 @@
 #define AppName "AethelHook"
-#define AppVersion "1.1"
+#define AppVersion "1.2"
 #define AppPublisher "AethelSt8"
 
 [Setup]
@@ -49,6 +49,7 @@ Source: "dist\hooks\codex\on_agent_done.ps1"; DestDir: "{commonappdata}\AethelHo
 Source: "dist\hooks\codex\notify_async.ps1"; DestDir: "{commonappdata}\AethelHook\hooks\codex"; Flags: ignoreversion
 Source: "dist\hooks\gemini\on_approval_request.ps1"; DestDir: "{commonappdata}\AethelHook\hooks\gemini"; Flags: ignoreversion
 Source: "dist\hooks\gemini\on_task_complete.ps1"; DestDir: "{commonappdata}\AethelHook\hooks\gemini"; Flags: ignoreversion
+Source: "dist\hooks\opencode\aethelhook-plugin.js"; DestDir: "{commonappdata}\AethelHook\hooks\opencode"; Flags: ignoreversion
 Source: "dist\install_hooks.ps1"; DestDir: "{tmp}"; Flags: ignoreversion deleteafterinstall
 Source: "dist\uninstall_hooks.ps1"; DestDir: "{app}"; Flags: ignoreversion
 Source: "dist\aethelhook.ico"; DestDir: "{app}"; Flags: ignoreversion

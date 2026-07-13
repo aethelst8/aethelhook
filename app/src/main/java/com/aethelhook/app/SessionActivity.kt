@@ -102,8 +102,15 @@ private object SessionChatStore {
     }
 }
 
+private fun agentLabel(agent: String, longForm: Boolean = false): String = when {
+    agent.equals("codex", ignoreCase = true)    -> "Codex"
+    agent.equals("opencode", ignoreCase = true) -> "OpenCode"
+    longForm                                    -> "Claude Code"
+    else                                         -> "Claude"
+}
+
 private suspend fun sendPromptToApi(baseUrl: String, ctx: Context, prompt: String, projectDir: String?, agent: String): String = withContext(Dispatchers.IO) {
-    val agentLabel = if (agent.equals("codex", ignoreCase = true)) "Codex" else "Claude Code"
+    val label = agentLabel(agent, longForm = true)
     try {
         val json    = JSONObject().apply {
             put("prompt", prompt)
@@ -113,7 +120,7 @@ private suspend fun sendPromptToApi(baseUrl: String, ctx: Context, prompt: Strin
         val body    = json.toRequestBody("application/json; charset=utf-8".toMediaType())
         val request = Request.Builder().url("$baseUrl/hook/send-prompt").post(body).build()
         AethelHookWebSocket.newBoundHttpClient(ctx).newCall(request).execute().use { response ->
-            if (response.isSuccessful) "" else friendlyHttpError(response.code, response.body?.string(), agentLabel)
+            if (response.isSuccessful) "" else friendlyHttpError(response.code, response.body?.string(), label)
         }
     } catch (e: Exception) {
         friendlyNetworkError(e)
@@ -297,7 +304,7 @@ private fun SessionChatScreen(ctx: Context, project: ProjectInfo, onBack: () -> 
         val targetList = SessionChatStore.messagesFor(targetKey)
         val message    = u.optString("message")
         val detail     = u.optString("detail")
-        val agentLabel = if (u.optString("agent").equals("codex", ignoreCase = true)) "Codex" else "Claude Code"
+        val label      = agentLabel(u.optString("agent"), longForm = true)
 
         when (u.optString("type")) {
             "session_update" -> {
@@ -306,7 +313,7 @@ private fun SessionChatScreen(ctx: Context, project: ProjectInfo, onBack: () -> 
                         text      = detail.ifBlank { message },
                         timestamp = System.currentTimeMillis(),
                         isUser    = false,
-                        label     = u.optString("tool_name").ifBlank { agentLabel }
+                        label     = u.optString("tool_name").ifBlank { label }
                     )
                 )
                 SessionChatStore.setThinking(targetKey, false)
@@ -323,7 +330,7 @@ private fun SessionChatScreen(ctx: Context, project: ProjectInfo, onBack: () -> 
                             text      = detail.ifBlank { message },
                             timestamp = System.currentTimeMillis(),
                             isUser    = false,
-                            label     = agentLabel
+                            label     = label
                         )
                     )
                 }
@@ -376,15 +383,19 @@ private fun SessionChatScreen(ctx: Context, project: ProjectInfo, onBack: () -> 
                 modifier = Modifier.weight(1f)
             )
             // Per-message agent toggle - each send uses whichever is currently picked,
-            // and every project keeps independent Claude/Codex chat + resumable threads
-            // (CodexProjectSessions on the server), so switching this doesn't lose or
-            // mix up either conversation.
+            // and every project keeps independent Claude/Codex/OpenCode chat + resumable
+            // threads (ProjectSessions/CodexProjectSessions/OpenCodeProjectSessions on
+            // the server), so cycling this doesn't lose or mix up any conversation.
             Row(
                 modifier = Modifier
                     .clip(RoundedCornerShape(50))
                     .background(c.bgCardAlt)
                     .clickable {
-                        selectedAgent = if (selectedAgent == "codex") "claude" else "codex"
+                        selectedAgent = when (selectedAgent) {
+                            "claude"   -> "codex"
+                            "codex"    -> "opencode"
+                            else       -> "claude"
+                        }
                         AppPrefs.setLastAgent(ctx, selectedAgent)
                     }
                     .padding(horizontal = 10.dp, vertical = 5.dp),
@@ -393,7 +404,7 @@ private fun SessionChatScreen(ctx: Context, project: ProjectInfo, onBack: () -> 
             ) {
                 Icon(Icons.Default.SmartToy, contentDescription = null, tint = c.accentCyan, modifier = Modifier.size(13.dp))
                 Text(
-                    if (selectedAgent == "codex") "Codex" else "Claude",
+                    agentLabel(selectedAgent),
                     color = c.textPrimary, fontSize = 11.sp, maxLines = 1
                 )
             }

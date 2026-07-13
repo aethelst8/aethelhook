@@ -130,6 +130,22 @@ $geminiHooks = [PSCustomObject]@{
 }
 $geminiHooks | ConvertTo-Json -Depth 10 | Out-File $geminiHooksPath -Encoding utf8NoBOM -Force
 
+# --- OpenCode: C:\Users\<user>\.config\opencode\opencode.json (global scope) ---
+# Architecturally different from the other three - OpenCode's hook mechanism is a JS
+# plugin loaded into its own process (registered via this config's "plugin" array), not
+# a PowerShell script invoked per event. Confirmed live (2026-07-13): OpenCode follows
+# XDG-style config conventions even on Windows (.config\opencode, not .opencode).
+$openCodeConfigDir  = "$UserProfile\.config\opencode"
+$openCodeConfigPath = "$openCodeConfigDir\opencode.json"
+$openCodePluginPath = "$hooksDir\opencode\aethelhook-plugin.js" -replace '\\', '/'
+
+New-Item -ItemType Directory -Force -Path $openCodeConfigDir | Out-Null
+$openCodeConfig = [PSCustomObject]@{
+    '$schema' = "https://opencode.ai/config.json"
+    plugin    = @($openCodePluginPath)
+}
+$openCodeConfig | ConvertTo-Json -Depth 10 | Out-File $openCodeConfigPath -Encoding utf8NoBOM -Force
+
 # --- VS Code keybinding: claude-vscode.focus -> Ctrl+Alt+Shift+F9 (Phase 2: Session
 # Access). send_prompt_to_session.ps1 sends this exact combo to reliably route focus
 # to the Claude Code chat input via VS Code's own keybinding dispatch, instead of a

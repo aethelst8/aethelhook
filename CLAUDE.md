@@ -1,7 +1,7 @@
 # AethelHook - Working Notes for Claude Code
 
 AI agent permission gateway: routes dangerous tool calls (and now phone-initiated
-prompts) between Claude Code / Codex / Antigravity and an Android phone. See
+prompts) between Claude Code / Codex / Antigravity / OpenCode and an Android phone. See
 `README.md` for the public-facing product description; this file is the current,
 continuously-maintained technical reference - keep it up to date as things change,
 don't let it go stale like the archived docs in `docs/archive/` (including the old
@@ -489,6 +489,221 @@ security work since done - see README.md instead).
     resolution, so weren't subject to this failure mode), most likely just
     another symptom of that PC's install being in a broken/incomplete state
     before this session's fixes landed. No separate root cause found or needed.
+26. **Antigravity's live hook scripts had never actually been deployed to this dev
+    machine at all, and its approval-gate/no-confirmation-needed setup is entirely
+    different from Codex's.** Two separate, real findings from a 2026-07-13
+    from-scratch pass on Antigravity (deferred since Claude Code/Codex work wrapped
+    up):
+    - `C:\ProgramData\AethelHook\hooks\gemini\` - where `RestoreAntigravityHooks()`'s
+      `hooks.json` points - simply didn't exist on this machine, ever. `install.ps1`
+      only rebuilds/restarts the service; it never copies hook script files (that's
+      `AethelHook.iss`/`dist\install_hooks.ps1`'s job, for a real installer run,
+      which this dev machine never went through for Antigravity specifically).
+      Every Antigravity `PreToolUse` approval and every `Stop`/`AfterAgent`/
+      `SessionEnd` "done" notification silently failed outright (fire-and-forget
+      events ignore exit code per Q2 in `ANTIGRAVITY_HOOKS.md`, so a missing-file
+      PowerShell error was invisible). Fixed by copying `.gemini\hooks\*.ps1` to
+      that path directly (no elevation needed - the folder's ACL already allows the
+      interactive user to write). Also fixed a real bug found at the same time:
+      `on_task_complete.ps1` (Antigravity's Stop-equivalent) never read/forwarded
+      `cwd`, the same class of bug already fixed for Claude/Codex's own Stop hooks -
+      now mirrors their pattern.
+    - **Antigravity's own native "Allow running this command?" / file-edit-accept
+      dialogs are a *separate* layer from the `PreToolUse` hook, gated by IDE
+      settings, not by anything in `hooks.json`.** Initially tried to work around
+      the terminal dialog staying stuck (phone answers, dialog never dismisses)
+      with a keystroke-injection script (`send_antigravity_key.ps1`, mirroring
+      Claude Code's `send_plan_key.ps1`/`send_answer_key.ps1` pattern) - built,
+      wired in, then **fully reverted same session** at explicit user request
+      ("I don't like this keystroke approach, it's dangerous"). The actual fix
+      needed no code at all: Settings > Permissions has **"Terminal Command Auto
+      Execution"** (Terminal section - set to **"Always Proceed"**) and **"Review
+      Policy"** (Planning section - set to **"Auto Accept"**). Both default to
+      requiring manual confirmation; setting both removes Antigravity's own native
+      dialog entirely for `run_command` and for file edits, leaving AethelHook's
+      `PreToolUse` hook (`deny` = hard block, confirmed independent of any dialog)
+      as the sole real gate - same tradeoff/precedent as Codex's
+      `approval_policy="never"` fix (gotcha #16). **Live-verified working** for
+      both settings after the user changed them.
+    - **Still unresolved**: `Stop`/`AfterAgent`/`SessionEnd` genuinely never fire,
+      even after the missing-file fix above and a full Antigravity IDE restart
+      (ruled out stale-cached-config theory). Exhausted every local log location
+      (`hook_debug.log`, `api.log`, the `google.antigravity` extension log, the Go
+      language-server daemon log, `main.log`, `cloudcode.log`, crash logs) with zero
+      trace of these three events ever being dispatched, despite `PreToolUse`
+      dispatching and logging correctly every time. The one real lead: Antigravity
+      IDE's own DevTools console shows `GetAgentScripts`/`GetMendelFlags` failing
+      with `ERR_CERT_AUTHORITY_INVALID` against its own local backend
+      (`127.0.0.1:<port>`, a self-signed cert its own embedded Chromium doesn't
+      trust) - "GetAgentScripts" is a plausible name for whatever dispatches
+      lifecycle hook scripts, but unconfirmed (could be an unrelated Antigravity
+      feature, e.g. custom agent skills). This is a bug inside Antigravity IDE
+      itself if true - nothing in AethelHook's own code can fix a cert-trust
+      failure between two Google-controlled local processes. User plans to report
+      it via Antigravity's own "Provide Feedback"; not yet filed.
+    - **Investigated and explicitly deferred**: Session Access (phone-initiated
+      headless prompt) for Antigravity, twice in the same session. First pass:
+      Antigravity IDE itself is Electron-GUI-only, no CLI/exec entry point found
+      anywhere in its install directory. Second pass (user surfaced this): Google
+      does ship a genuinely separate headless-capable CLI, `agy` (`agy -p "prompt"`,
+      `--output-format json`, matching `claude -p`/`codex exec`'s shape) - but (a)
+      it is a wholly separate binary/install from the Antigravity IDE, meaning every
+      end user would need a second, independent install just for this, and (b) it
+      has a known, currently-open upstream bug (`google-antigravity/antigravity-cli`
+      issue #76) where headless `-p`/`--print` silently drops all stdout when run
+      as a subprocess/non-TTY - exactly the invocation pattern
+      `RunHeadlessPromptAsync`/`RunHeadlessCodexPromptAsync` already use. Not worth
+      the added install burden plus working around an open upstream bug; revisit
+      only if `agy` ships bundled with the IDE or that bug gets fixed.
+    - Also found and left alone: a stale, orphaned `C:\Users\<user>\.gemini\
+      antigravity-cli\hooks.json` on this dev machine, hardcoded to
+      `C:\AethelHook\.gemini\hooks\...` (dev path) with only a 5-second
+      `PreToolUse` timeout - unrelated to anything `Program.cs` writes, looks like
+      an old abandoned manual experiment (possibly testing `agy` CLI specifically,
+      which explains the different config directory name). Not cleaned up yet;
+      harmless since `agy` isn't installed here to ever read it.
+27. **OpenCode (`opencode-ai`, v1.4.3, already installed on this dev machine) added as
+    a 4th approval-gated agent (2026-07-13), approval-gate only - no Session Access.**
+    Its hook mechanism is architecturally unlike the other three: a JS/TS **plugin**
+    loaded once into OpenCode's own long-running process (not a PowerShell script
+    spawned per event via a JSON hooks config). Everything below was confirmed by
+    direct empirical testing against the real installed SDK
+    (`~/.config/opencode/node_modules/@opencode-ai/plugin/dist/index.d.ts`, the actual
+    authoritative type definitions) and real `opencode run` invocations - not trusted
+    from blog posts/gists alone, several of which turned out subtly wrong (see below).
+    - **Registration**: a plugin is a `.js` file exporting an ESM named export
+      (`export const X = async (ctx) => ({ ...hooks })`, matching
+      `@opencode-ai/plugin`'s own shipped example verbatim) - CommonJS
+      `module.exports.X = ...` **silently fails to load** (no error anywhere, just
+      never fires - confirmed live by the complete absence of even a module-top-level
+      log line). Registered via a `"plugin": ["<absolute/path.js>"]` array in
+      `opencode.json` - **not** auto-discovered by dropping a file into a
+      `plugin/`/`plugins/` folder, despite several blog posts claiming otherwise (both
+      directory-name variants were tried and neither loaded anything on its own).
+      OpenCode's real global config directory is XDG-style even on Windows -
+      `<profile>\.config\opencode\opencode.json`, not `<profile>\.opencode\...`.
+    - **The approval gate is `tool.execute.before(input, output)`**, confirmed live:
+      `input = {tool, sessionID, callID}`, `output = {args: {...}}` (e.g. for `bash`,
+      `output.args.command`). **Throwing an `Error` inside it genuinely blocks the
+      tool call** - the agent receives a real tool-execution error
+      (`state.status:"error"`, `state.error:"<thrown message>"`), not a silent bypass.
+      Returning normally lets it proceed. This is the sole gate - no native GUI dialog
+      exists to fight (unlike Antigravity), since OpenCode is a pure terminal tool.
+    - **Do not build against `permission.ask`, OpenCode's own documented approval
+      hook** - it is defined in the plugin SDK's TypeScript types but is **never
+      actually triggered** (confirmed by our own live testing - it never once fired
+      across many real tool calls - and by an open upstream bug,
+      `anomalyco/opencode#7006`, filed Jan 2026, still open). The exact same
+      "documented but silently doesn't fire" trap as Antigravity's Stop hook earlier
+      this session - caught this time *before* building against it, not after.
+    - **There is no dedicated `"session.idle"` hook key.** It's an event *type*
+      delivered through a separate generic `event` hook
+      (`event: async (input) => {...}`, check `input.event.type === "session.idle"`),
+      payload is just `{sessionID}` - no `cwd`, no message text. Confirmed genuinely
+      real and working (not a hallucinated blog claim, unlike the CJS-export and
+      folder-auto-discovery claims above) - it just never fired during initial testing
+      with a free test model that got stuck in an unrelated auto-continuation loop
+      ("Continue if you have next steps...") and never reached a true idle state
+      within any reasonable timeout; switching to a model that hit a real terminal
+      error confirmed the event fires exactly as documented once a session actually
+      finishes. Also confirmed live via the *real* production deployment (not just a
+      throwaway test plugin): `tool.execute.before` posting to `/hook/event` and long
+      -polling `/hook/wait-decision` through the actual running AethelHook API, for
+      both `allow_once` and `deny_with_reason` decisions, end to end.
+    - **Backend mirrors the Codex pattern** (`FindCodexCliInfo`/`RestoreCodexHooks`/
+      `RestoreClaudeCodeHooks`'s merge-preserving-existing-keys approach) but simpler:
+      no headless-CLI spawning needed for the approval gate itself (the plugin runs
+      inside whatever OpenCode process the user already started interactively), so no
+      `FindOpenCodeCliInfo()` was needed - only `FindOpenCodeConfigPath()` +
+      `RestoreOpenCodeHooks()`/`RemoveOpenCodeHooks()` (merging/unmerging a single
+      string into `opencode.json`'s `"plugin"` array, preserving any other keys/
+      plugins the user has, mirroring Claude's approach rather than Codex's
+      overwrite-the-whole-file approach - `opencode.json` is far more likely to hold
+      real user config worth preserving) + `IsOpenCodeGatewayActive` +
+      `/opencode/gateway/activate`/`/opencode/gateway/deactivate`, same shape as
+      Codex's. Deployed and live-verified on this dev machine directly (plugin file to
+      `C:\ProgramData\AethelHook\hooks\opencode\`, `opencode.json` written by hand
+      matching `RestoreOpenCodeHooks()`'s exact output) without needing `install.ps1`,
+      since the new endpoints aren't required for the core mechanism to work - only
+      for the phone-side gateway toggle.
+    - **Explicitly deferred, not built**: Session Access (headless phone-initiated
+      prompt). `opencode run --format json` looks genuinely promising for this later
+      (confirmed live: clean newline-delimited JSON events - `step_start`/`tool_use`/
+      `text`/`step_finish`/`error`, each carrying a resumable `sessionID`; real
+      `--continue`/`--session`/`--fork`/`--dir`/`--model` flags) - but scoped out of
+      this pass to match how Session Access was added later as its own follow-up for
+      Claude/Codex too. One quirk worth knowing before attempting it: `opencode run`
+      did not cleanly exit after producing a final response in several live tests -
+      unclear yet whether that's model-specific (the free `opencode/big-pickle` test
+      model's own auto-continuation behavior) or a `run`-mode-general quirk; needs
+      more investigation before a `RunHeadlessOpenCodePromptAsync` is written against
+      it.
+    - **`install.ps1` has since been run and the new endpoints are live-verified**:
+      `/opencode/gateway/activate`/`deactivate` confirmed working directly (activate
+      restores the exact `"plugin"` entry, deactivate cleanly removes the whole
+      `plugin` key, no duplicate entries on repeated activation - the merge logic is
+      idempotent).
+    - **Android app updated the same day**: added a third "OpenCode" gateway toggle
+      to `MainActivity.kt`'s dashboard (mirroring the existing Codex toggle block
+      exactly - own `Switch`, own `openCodeGatewayEnabled` state, POSTs to
+      `opencode/gateway/activate`/`deactivate`) plus
+      `getOpenCodeGatewayEnabled`/`setOpenCodeGatewayEnabled` in `AppPrefs.kt`. Every
+      `anyEnabled`/`anyGatewayEnabled` three-gateway combine check (whether the
+      WebSocket service should be running, what the status hero card shows) updated
+      to a 3-way OR across all three flags. Rebuilt via `assembleDebug` (the phone
+      already had a debug build installed, confirmed via `dumpsys package` showing
+      the `DEBUGGABLE` flag, so `adb install -r` worked with no uninstall/signature-
+      mismatch needed), installed on-device, and **user confirmed the toggle displays
+      and works correctly.** No version bump for this change.
+28. **OpenCode Session Access (phone-initiated headless prompt) added - `opencode run`
+    has a real, reproducible "doom loop" bug that the documented config option to
+    disable does NOT actually disable.** After the model gives a genuine final reply,
+    OpenCode itself injects a synthetic user message ("Continue if you have next
+    steps, or stop and ask for clarification if you are unsure how to proceed.") and
+    keeps looping the agent indefinitely - confirmed live, reproduces with `--pure`
+    (no AethelHook plugin loaded at all) and with a totally fresh, un-resumed session,
+    so it's unrelated to our plugin, the model/provider configured, or any tool call -
+    a general `opencode run` behavior. Each extra round re-sends the full cached
+    context (~229k tokens in testing) for no benefit - real time and real money burned
+    looping on nothing. OpenCode's own config schema has a `permission.doom_loop`
+    option (`PermissionActionConfig`, valid at both the global top level and per-agent)
+    that looks like exactly the right knob - tried both `"deny"` globally and on a
+    dedicated `mode:"primary"` agent invoked via `--agent`, live, and the loop
+    continued regardless. Same class of bug as gotcha #27's `permission.ask` - a
+    documented option that silently does not do what it says. Fix: don't fight it -
+    `step_finish` with `reason:"stop"` is OpenCode's own signal that the model gave a
+    final answer with no pending tool calls (the same natural end-of-turn boundary
+    Claude's `-p` and Codex's `exec` give for free), so `RunHeadlessOpenCodePromptAsync`
+    captures that as the result and immediately `Kill(entireProcessTree: true)`s the
+    process, before the synthetic nudge can ever be injected. Live-verified this is
+    safe for resume: killing right after "stop" still leaves a fully resumable
+    session - a follow-up `--session <id>` run correctly recalled a detail from the
+    killed run's conversation, through the real deployed API, not just a standalone
+    CLI test. One more quirk observed (not fixed, not ours to fix): a resumed
+    session's very first reply sometimes comes back wrapped in a "## Goal /
+    Instructions / Discoveries / Accomplished" summary template instead of directly
+    answering - reproduces identically with `--pure` and no resume at all, so it's a
+    model/CLI response-style quirk, not an AethelHook or resume-logic bug; the
+    resumed context itself was still correct in every test (it named the exact prior
+    answer). CLI discovery: OpenCode installs as a global npm package - the
+    `opencode`/`opencode.cmd`/`opencode.ps1` shims on PATH just relaunch the real
+    platform binary at
+    `<profile>\AppData\Roaming\npm\node_modules\opencode-ai\node_modules\opencode-
+    windows-x64\bin\opencode.exe` (confirmed live it runs standalone, no node.exe
+    wrapper needed) - `FindOpenCodeCliInfo()` resolves straight to that, same
+    "scan C:\Users\*" pattern as `FindClaudeCliInfo`/`FindCodexCliInfo`. Session
+    continuity uses OpenCode's own `sessionID` (`OpenCodeProjectSessions`, a third
+    per-directory dictionary alongside `ProjectSessions`/`CodexProjectSessions`,
+    persisted in `project_state.json` the same way). Android's Session tab agent
+    toggle now cycles Claude -> Codex -> OpenCode instead of just two (shared
+    `agentLabel()` helper in `SessionActivity.kt`). Live-verified end-to-end against
+    the real running service after the user ran `install.ps1`: a real
+    `/hook/send-prompt` call with `agent:"opencode"` replied cleanly ("PONG", no
+    doom-loop garbage), and the user independently tested the same flow from their
+    own phone against a different project directory while this was being verified.
+    Debug APK rebuilt and reinstalled via `adb install -r`. Session Access is now at
+    feature parity across all three headless-capable agents (Claude, Codex,
+    OpenCode) - Antigravity remains approval-gate-only per gotcha #26.
 
 ## Key file paths
 
@@ -529,6 +744,116 @@ dotnet publish AethelHook.Tray\AethelHook.Tray.csproj -c Release -r win-x64 --se
 significant work session, the same way you'd update any other session/handoff file.
 Older entries can be trimmed once they're no longer relevant; this isn't a full
 changelog (see git history / memory for that), just enough to orient the next session.*
+
+**As of 2026-07-13 (OpenCode Session Access added - headless phone prompts now work
+for all three headless-capable agents):**
+
+- **Full detail in gotcha #28 above.** Short version: extended `/hook/send-prompt` to
+  support `agent:"opencode"`, mirroring the existing Claude/Codex headless runners.
+  Found a real, reproducible bug in `opencode run` itself during empirical testing
+  (same "verify before building" discipline as the plugin work earlier the same day):
+  after a genuine reply, OpenCode injects a synthetic "continue if you have next
+  steps" nudge and loops indefinitely, burning real tokens - and the documented
+  `permission.doom_loop: "deny"` config option does not actually stop it (tried both
+  globally and per-agent, live). Fix: treat `step_finish` with `reason:"stop"` as the
+  real end of the turn and kill the process immediately, before the loop can restart -
+  confirmed this doesn't break resumability (a follow-up `--session <id>` run still
+  recalls the killed run's conversation correctly).
+- **`FindOpenCodeCliInfo()`** resolves straight to the real platform binary
+  (`opencode-ai\node_modules\opencode-windows-x64\bin\opencode.exe`) rather than going
+  through the npm shim, same pattern as `FindClaudeCliInfo`/`FindCodexCliInfo`.
+  `OpenCodeProjectSessions` tracks OpenCode's own `sessionID` per directory, persisted
+  in `project_state.json` alongside the other two agents' session maps.
+- **Android's Session tab agent toggle now cycles three ways** (Claude -> Codex ->
+  OpenCode) instead of two, via a shared `agentLabel()` helper in `SessionActivity.kt`.
+- **Live-verified end-to-end against the real deployed service** after the user ran
+  `install.ps1`: sent a real `/hook/send-prompt` with `agent:"opencode"` targeting
+  `C:\AethelHook`, got back a clean "PONG" with no doom-loop noise, then confirmed a
+  follow-up resumed message correctly recalled the prior turn. The user independently
+  exercised the same flow from their own phone against a different project directory
+  while this was being verified. Debug APK rebuilt (`assembleDebug`) and reinstalled
+  via `adb install -r`.
+- **Not yet done**: this hasn't been baked into the friend-facing installer/rebuilt
+  `AethelHook-Setup.exe` yet - only the dev machine's live service and debug APK are
+  confirmed on this change so far, same as the approval-gate-only OpenCode work
+  earlier the same day.
+
+**As of 2026-07-13 (OpenCode added as a 4th approval-gated agent, approval-gate only):**
+
+- **Full detail in gotcha #27 above.** Short version: added OpenCode (v1.4.3, JS/TS
+  plugin architecture, unlike the other three's PowerShell-hook-per-event model).
+  Went through a mandatory empirical-verification phase first (given how much the
+  Antigravity Stop-hook mystery cost this same session from building against
+  unverified hook behavior) - caught two real inaccuracies in blog-post/gist sources
+  before writing any real code: CommonJS `module.exports` silently fails to load
+  (needs ESM `export const`), and plugins are NOT auto-discovered from a
+  `plugin/`/`plugins/` folder (must be registered via `opencode.json`'s `"plugin"`
+  array). Also confirmed OpenCode's own documented `permission.ask` hook is broken
+  (open upstream issue) before building against it - used `tool.execute.before`
+  instead (confirmed reliable, throwing an Error genuinely blocks the tool call).
+- **Live-verified end-to-end against the real running AethelHook API**, not just a
+  syntax check: real `opencode run` invocations, real `/hook/event`/
+  `/hook/wait-decision` round trips, both `allow_once` and `deny_with_reason`
+  decisions confirmed to actually take effect (deny surfaces as a genuine
+  tool-execution error to the agent).
+- **Program.cs backend mirrors the Codex pattern** (`FindOpenCodeConfigPath`,
+  `RestoreOpenCodeHooks`/`RemoveOpenCodeHooks` merging `opencode.json`'s `"plugin"`
+  array, `IsOpenCodeGatewayActive` + `/opencode/gateway/activate`/`deactivate`) -
+  simpler than Codex's, since the approval gate needs no headless-CLI-spawning logic
+  (the plugin runs inside whatever OpenCode process the user already has open).
+  `dotnet build` succeeds; deployed to this dev machine by hand (plugin file +
+  `opencode.json`) without needing `install.ps1`, since the new endpoints only matter
+  for the phone-side gateway toggle, not the core mechanism.
+- **Explicitly deferred**: Session Access (headless phone prompt) for OpenCode.
+  `opencode run --format json` looks genuinely promising for a future pass (clean
+  JSON event stream, real resume/session flags) - but scoped out to match how this
+  was added later as its own follow-up for Claude/Codex too.
+- **`install.ps1` has since been run by the user and the live service confirmed
+  working**: `/opencode/gateway/activate`/`deactivate` verified directly (activate
+  restores the exact `"plugin"` entry, deactivate cleanly removes it, no duplicates on
+  repeated activation - the merge is idempotent).
+- **Android app updated the same day**: a third "OpenCode" gateway toggle added to
+  `MainActivity.kt`'s dashboard (mirrors the Codex toggle exactly) plus
+  `getOpenCodeGatewayEnabled`/`setOpenCodeGatewayEnabled` in `AppPrefs.kt`; every
+  `anyEnabled`/`anyGatewayEnabled` check updated to a 3-way OR. Rebuilt via
+  `assembleDebug`, installed via `adb install -r` (the phone already had a debug
+  build, so no uninstall/signature-mismatch issue), and **user confirmed the toggle
+  works correctly on-device.** This closes out the OpenCode integration for this
+  session - approval gate + phone-side toggle both fully live-verified end to end.
+- Installer files (`dist\hooks\opencode\`, `AethelHook.iss`,
+  `dist\install_hooks.ps1`) are updated and ready but not yet exercised via an actual
+  `AethelHook-Setup.exe` rebuild/run - only the dev machine's live service and the
+  debug APK have been verified so far.
+
+**As of 2026-07-13 (Antigravity from-scratch pass - deployed missing hooks, found the
+real approval-dialog fix, Stop hook still unresolved):**
+
+- **Full detail in gotcha #26 above.** Short version: Antigravity's live hook scripts
+  had never actually been deployed to `C:\ProgramData\AethelHook\hooks\gemini\` on
+  this dev machine (only `dist\` and the dev `.gemini\hooks\` copies existed) -
+  fixed, plus fixed `on_task_complete.ps1` not forwarding `cwd` (same class of bug
+  already fixed for Claude/Codex).
+- **Antigravity's native approval dialogs turned out to be an IDE settings problem,
+  not a hooks.json problem.** Tried keystroke injection first
+  (`send_antigravity_key.ps1`), then fully reverted it same-session at explicit user
+  request. The real fix needed zero code: Settings > Permissions >
+  **"Terminal Command Auto Execution" = "Always Proceed"** and **"Review Policy" =
+  "Auto Accept"** - both live-verified working, with AethelHook's `PreToolUse` hook
+  now the sole real gate (same precedent as Codex's `approval_policy="never"`).
+- **Still open**: `Stop`/`AfterAgent`/`SessionEnd` never fire at all, even after the
+  missing-file fix and a full Antigravity restart. Best lead so far is a
+  `GetAgentScripts`/`GetMendelFlags` cert-trust error in Antigravity's own DevTools
+  console (against its own local backend) - unconfirmed whether that's actually the
+  hook-dispatch path, and not something AethelHook's own code can fix regardless.
+  User is reporting it to Google via Antigravity's own feedback channel; not yet
+  filed as of this session.
+- **Explicitly deferred, not pursued**: Session Access (phone-initiated headless
+  prompt) for Antigravity. Investigated twice - once ruling out the GUI IDE (no
+  CLI/exec entry point at all), once re-opened after learning Google ships a
+  separate `agy` CLI with real headless support (`agy -p`) - but that CLI needs its
+  own independent install (not bundled with the IDE) and has an open upstream bug
+  dropping stdout in headless/non-TTY subprocess mode. Revisit only if either of
+  those change.
 
 **As of 2026-07-12 (api_token.txt ACL fix - hooks failing on other PCs):**
 

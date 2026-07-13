@@ -358,6 +358,7 @@ fun DashboardScreen(ctx: Context, isDark: Boolean, onToggleTheme: () -> Unit) {
     var apiUrl by remember { mutableStateOf(AppPrefs.getApiUrl(ctx)) }
     var gatewayEnabled by remember { mutableStateOf(AppPrefs.getGatewayEnabled(ctx)) }
     var codexGatewayEnabled by remember { mutableStateOf(AppPrefs.getCodexGatewayEnabled(ctx)) }
+    var openCodeGatewayEnabled by remember { mutableStateOf(AppPrefs.getOpenCodeGatewayEnabled(ctx)) }
     var history by remember { mutableStateOf(AppPrefs.getHistory(ctx)) }
     var totalCount by remember { mutableStateOf(AppPrefs.getTotalCount(ctx)) }
     var approvedCount by remember { mutableStateOf(AppPrefs.getApprovedCount(ctx)) }
@@ -371,7 +372,8 @@ fun DashboardScreen(ctx: Context, isDark: Boolean, onToggleTheme: () -> Unit) {
             apiUrl              = AppPrefs.getApiUrl(ctx)
             gatewayEnabled      = AppPrefs.getGatewayEnabled(ctx)
             codexGatewayEnabled = AppPrefs.getCodexGatewayEnabled(ctx)
-            val anyEnabled = gatewayEnabled || codexGatewayEnabled
+            openCodeGatewayEnabled = AppPrefs.getOpenCodeGatewayEnabled(ctx)
+            val anyEnabled = gatewayEnabled || codexGatewayEnabled || openCodeGatewayEnabled
             apiStatus     = if (anyEnabled) AethelHookWebSocket.isConnected else false
             history       = AppPrefs.getHistory(ctx)
             totalCount    = AppPrefs.getTotalCount(ctx)
@@ -425,7 +427,7 @@ fun DashboardScreen(ctx: Context, isDark: Boolean, onToggleTheme: () -> Unit) {
         // Gateway status hero card
         LiquidGlassCard {
             Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
-                val anyGatewayEnabled = gatewayEnabled || codexGatewayEnabled
+                val anyGatewayEnabled = gatewayEnabled || codexGatewayEnabled || openCodeGatewayEnabled
                 val statusTitle = when {
                     !anyGatewayEnabled -> "Gateway Disabled"
                     apiStatus == true  -> "Gateway Live"
@@ -490,7 +492,7 @@ fun DashboardScreen(ctx: Context, isDark: Boolean, onToggleTheme: () -> Unit) {
                             gatewayEnabled = enabled
                             AppPrefs.setGatewayEnabled(ctx, enabled)
                             val url = AppPrefs.getApiUrl(ctx)
-                            val anyEnabled = enabled || AppPrefs.getCodexGatewayEnabled(ctx)
+                            val anyEnabled = enabled || AppPrefs.getCodexGatewayEnabled(ctx) || AppPrefs.getOpenCodeGatewayEnabled(ctx)
                             if (enabled) {
                                 scope.launch {
                                     withContext(Dispatchers.IO) {
@@ -554,12 +556,62 @@ fun DashboardScreen(ctx: Context, isDark: Boolean, onToggleTheme: () -> Unit) {
                             codexGatewayEnabled = enabled
                             AppPrefs.setCodexGatewayEnabled(ctx, enabled)
                             val url = AppPrefs.getApiUrl(ctx)
-                            val anyEnabled = enabled || AppPrefs.getGatewayEnabled(ctx)
+                            val anyEnabled = enabled || AppPrefs.getGatewayEnabled(ctx) || AppPrefs.getOpenCodeGatewayEnabled(ctx)
                             scope.launch {
                                 withContext(Dispatchers.IO) {
                                     try {
                                         val client = AethelHookWebSocket.newBoundHttpClient(ctx)
                                         val endpoint = if (enabled) "codex/gateway/activate" else "codex/gateway/deactivate"
+                                        val req = Request.Builder()
+                                            .url("$url/$endpoint")
+                                            .post("".toRequestBody())
+                                            .build()
+                                        client.newCall(req).execute().close()
+                                    } catch (_: Exception) {}
+                                }
+                            }
+                            if (anyEnabled) AethelHookWebSocketService.start(ctx)
+                            else AethelHookWebSocketService.stop(ctx)
+                        },
+                        colors = SwitchDefaults.colors(
+                            checkedThumbColor   = c.bgDeep,
+                            checkedTrackColor   = c.accentCyan,
+                            uncheckedThumbColor = c.textSecondary,
+                            uncheckedTrackColor = c.divider
+                        )
+                    )
+                }
+
+                HorizontalDivider(color = c.divider.copy(alpha = 0.20f))
+
+                // OpenCode gateway toggle
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.SpaceBetween
+                ) {
+                    Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
+                        Text(
+                            if (openCodeGatewayEnabled) "OpenCode - Active" else "OpenCode - Inactive",
+                            color = c.textPrimary, fontSize = 14.sp, fontWeight = FontWeight.Medium
+                        )
+                        Text(
+                            if (openCodeGatewayEnabled) "Tool calls route to phone" else "Approve dialogs in OpenCode",
+                            color = c.textSecondary, fontSize = 12.sp
+                        )
+                    }
+                    Switch(
+                        checked = openCodeGatewayEnabled,
+                        onCheckedChange = { enabled ->
+                            openCodeGatewayEnabled = enabled
+                            AppPrefs.setOpenCodeGatewayEnabled(ctx, enabled)
+                            val url = AppPrefs.getApiUrl(ctx)
+                            val anyEnabled = enabled || AppPrefs.getGatewayEnabled(ctx) || AppPrefs.getCodexGatewayEnabled(ctx)
+                            scope.launch {
+                                withContext(Dispatchers.IO) {
+                                    try {
+                                        val client = AethelHookWebSocket.newBoundHttpClient(ctx)
+                                        val endpoint = if (enabled) "opencode/gateway/activate" else "opencode/gateway/deactivate"
                                         val req = Request.Builder()
                                             .url("$url/$endpoint")
                                             .post("".toRequestBody())

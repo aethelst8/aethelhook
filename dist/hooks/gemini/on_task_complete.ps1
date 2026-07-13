@@ -10,8 +10,10 @@ function Log($msg) {
 
 Log "Agent-done hook fired"
 
-# Read stdin - Antigravity may provide transcript_path or output
+# Read stdin - Antigravity may provide transcript_path or output, plus the common
+# cwd field every Antigravity hook event carries (confirmed present on PreToolUse).
 $transcriptPath = $null
+$cwd = $null
 try {
     $stdinReader = [System.IO.StreamReader]::new([Console]::OpenStandardInput(), [System.Text.Encoding]::UTF8)
     $stdinTask = $stdinReader.ReadToEndAsync()
@@ -21,6 +23,7 @@ try {
             Log "stdin: $raw"
             $data = $raw | ConvertFrom-Json -ErrorAction SilentlyContinue
             if ($data -and $data.transcript_path) { $transcriptPath = $data.transcript_path }
+            if ($data -and $data.cwd) { $cwd = $data.cwd }
         }
     }
 } catch { Log "stdin read failed: $_" }
@@ -57,6 +60,7 @@ $authHeaders = if ($apiToken) { @{"X-AethelHook-Token" = $apiToken} } else { @{}
 
 $notifyBody = @{ message = "Antigravity finished" }
 if ($summary) { $notifyBody.detail = $summary }
+if ($cwd) { $notifyBody.cwd = $cwd }
 
 try {
     $json      = $notifyBody | ConvertTo-Json -Compress

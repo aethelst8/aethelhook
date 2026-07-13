@@ -250,6 +250,7 @@ app.Map("/ws", async context =>
 // Gateway active flags - toggled by the Android app switch
 bool IsGatewayActive = true;
 bool IsCodexGatewayActive = true;
+bool IsOpenCodeGatewayActive = true;
 
 // Phase 2 (Session Access): the most recent working directory seen in any hook
 // event - the DEFAULT cwd for a brand-new phone conversation when the phone hasn't
@@ -283,6 +284,11 @@ var ProjectSessions = new ConcurrentDictionary<string, string>(StringComparer.Or
 // have a live Claude conversation AND a live Codex conversation in the same directory).
 var CodexProjectSessions = new ConcurrentDictionary<string, string>(StringComparer.OrdinalIgnoreCase);
 
+// Same idea again, for headless `opencode run` calls - OpenCode's resumable identifier
+// is a "sessionID" (its own namespace, distinct from Claude's session_id and Codex's
+// thread_id), tracked per directory just like the other two agents.
+var OpenCodeProjectSessions = new ConcurrentDictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+
 // Every distinct working directory any hook event has reported, with when it was
 // last seen - lets the phone list "known projects" to explicitly pick from instead
 // of always trusting whichever one LastKnownCwd currently points at.
@@ -311,6 +317,7 @@ void SaveProjectState()
             lastKnownCwd         = LastKnownCwd,
             projectSessions      = ProjectSessions.ToDictionary(kv => kv.Key, kv => kv.Value, StringComparer.OrdinalIgnoreCase),
             codexProjectSessions = CodexProjectSessions.ToDictionary(kv => kv.Key, kv => kv.Value, StringComparer.OrdinalIgnoreCase),
+            openCodeProjectSessions = OpenCodeProjectSessions.ToDictionary(kv => kv.Key, kv => kv.Value, StringComparer.OrdinalIgnoreCase),
             knownProjects        = KnownProjects.ToDictionary(kv => kv.Key, kv => kv.Value, StringComparer.OrdinalIgnoreCase)
         };
         var json = JsonSerializer.Serialize(state);
@@ -345,12 +352,17 @@ void LoadProjectState()
                 if (prop.Value.ValueKind == JsonValueKind.String)
                     CodexProjectSessions[prop.Name] = prop.Value.GetString()!;
 
+        if (root.TryGetProperty("openCodeProjectSessions", out var ocps) && ocps.ValueKind == JsonValueKind.Object)
+            foreach (var prop in ocps.EnumerateObject())
+                if (prop.Value.ValueKind == JsonValueKind.String)
+                    OpenCodeProjectSessions[prop.Name] = prop.Value.GetString()!;
+
         if (root.TryGetProperty("knownProjects", out var kp) && kp.ValueKind == JsonValueKind.Object)
             foreach (var prop in kp.EnumerateObject())
                 if (prop.Value.TryGetDateTime(out var seen))
                     KnownProjects[prop.Name] = seen;
 
-        Console.WriteLine($"[ProjectState] Restored {KnownProjects.Count} known project(s), {ProjectSessions.Count} Claude session(s), {CodexProjectSessions.Count} Codex thread(s) from disk");
+        Console.WriteLine($"[ProjectState] Restored {KnownProjects.Count} known project(s), {ProjectSessions.Count} Claude session(s), {CodexProjectSessions.Count} Codex thread(s), {OpenCodeProjectSessions.Count} OpenCode session(s) from disk");
     }
     catch (Exception ex) { Console.WriteLine($"[ProjectState] Load failed: {ex.Message}"); }
 }
@@ -411,6 +423,30 @@ app.MapPost("/codex/gateway/deactivate", (HttpContext ctx) =>
     IsCodexGatewayActive = false;
     RemoveCodexHooks();
     Console.WriteLine("[Codex Gateway] Deactivated - hooks.json removed, native Codex approvals active");
+    return Results.Ok(new { status = "deactivated" });
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// POST /opencode/gateway/activate  ─  restore the OpenCode plugin registration + mark active
+// ─────────────────────────────────────────────────────────────────────────────
+app.MapPost("/opencode/gateway/activate", (HttpContext ctx) =>
+{
+    if (!ValidateToken(ctx)) return Results.Unauthorized();
+    IsOpenCodeGatewayActive = true;
+    RestoreOpenCodeHooks();
+    Console.WriteLine("[OpenCode Gateway] Activated - plugin registered in opencode.json");
+    return Results.Ok(new { status = "activated" });
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// POST /opencode/gateway/deactivate  ─  unregister the OpenCode plugin + mark inactive
+// ─────────────────────────────────────────────────────────────────────────────
+app.MapPost("/opencode/gateway/deactivate", (HttpContext ctx) =>
+{
+    if (!ValidateToken(ctx)) return Results.Unauthorized();
+    IsOpenCodeGatewayActive = false;
+    RemoveOpenCodeHooks();
+    Console.WriteLine("[OpenCode Gateway] Deactivated - plugin unregistered, native OpenCode approvals active");
     return Results.Ok(new { status = "deactivated" });
 });
 
@@ -662,6 +698,7 @@ app.MapPost("/hook/send-prompt", (HttpContext ctx, SendPromptRequest request) =>
     }
 
     var useCodex = string.Equals(request.Agent, "codex", StringComparison.OrdinalIgnoreCase);
+    var useOpenCode = string.Equals(request.Agent, "opencode", StringComparison.OrdinalIgnoreCase);
 
     if (useCodex)
     {
@@ -673,6 +710,19 @@ app.MapPost("/hook/send-prompt", (HttpContext ctx, SendPromptRequest request) =>
         }
         _ = Task.Run(() => RunHeadlessCodexPromptAsync(codexPath, codexProfile, cwd, request.Prompt));
         Console.WriteLine($"[SendPrompt] Queued headless Codex run in {cwd}");
+        return Results.Ok(new { success = true, queued = true });
+    }
+
+    if (useOpenCode)
+    {
+        var (openCodePath, openCodeProfile) = FindOpenCodeCliInfo();
+        if (openCodePath == null)
+        {
+            Console.WriteLine("[SendPrompt] opencode.exe not found - cannot run headless prompt");
+            return Results.Problem("OpenCode CLI not found on this machine.");
+        }
+        _ = Task.Run(() => RunHeadlessOpenCodePromptAsync(openCodePath, openCodeProfile, cwd, request.Prompt));
+        Console.WriteLine($"[SendPrompt] Queued headless OpenCode run in {cwd}");
         return Results.Ok(new { success = true, queued = true });
     }
 
@@ -1001,6 +1051,182 @@ app.MapPost("/hook/send-prompt", (HttpContext ctx, SendPromptRequest request) =>
         {
             Console.WriteLine($"[SendPrompt] Failed to run headless Codex prompt: {ex.Message}");
             await BroadcastSessionEventAsync("prompt_result", "Prompt failed", ex.Message, cwd: workDir, agent: "codex");
+        }
+        finally
+        {
+            PromptRunLock.Release();
+        }
+    }
+
+    // OpenCode counterpart to the two runners above. OpenCode's own `run` subcommand
+    // has a real, reproducible quirk (confirmed live 2026-07-13, not a one-off): after
+    // the model finishes a genuine reply, OpenCode itself injects a synthetic user
+    // message ("Continue if you have next steps, or stop and ask for clarification...")
+    // and keeps looping the agent - unrelated to any tool call, unrelated to which
+    // model/provider is configured, and NOT suppressed by setting the documented
+    // `permission.doom_loop` config to "deny" either globally or on a dedicated agent
+    // (tried both live - the loop continued regardless, another instance of a
+    // documented OpenCode config option silently not doing what it says, same class of
+    // bug as gotcha #27's `permission.ask`). Left unchecked this burns real time and
+    // real tokens (each step re-sent ~229k cached tokens in testing) looping
+    // indefinitely instead of ending the turn. Since a `step_finish` event with
+    // `reason:"stop"` is exactly OpenCode's own signal that the model produced a final
+    // answer with no pending tool calls - the same natural end-of-turn boundary
+    // Claude's `-p` and Codex's `exec` give us for free - the fix is to stop trusting
+    // OpenCode to end its own turn: capture that first "stop" as the real answer and
+    // kill the process immediately, before the synthetic nudge ever gets injected.
+    // Live-verified this is safe for resume: killing right after "stop" still leaves a
+    // fully resumable session - a follow-up `--session <id>` run correctly recalled
+    // detail from the killed run's conversation.
+    async Task RunHeadlessOpenCodePromptAsync(string exePath, string? profileDir, string workDir, string prompt)
+    {
+        await PromptRunLock.WaitAsync();
+        try
+        {
+            Console.WriteLine($"[SendPrompt] Starting headless OpenCode run in {workDir}");
+
+            // OpenCode's resumable identifier is its own sessionID - a separate
+            // namespace from Claude's session_id and Codex's thread_id.
+            var resumeId = OpenCodeProjectSessions.TryGetValue(workDir, out var existingSessionId) ? existingSessionId : null;
+
+            var psi = new ProcessStartInfo
+            {
+                FileName               = exePath,
+                WorkingDirectory       = workDir,
+                RedirectStandardOutput = true,
+                RedirectStandardError  = true,
+                UseShellExecute        = false,
+                CreateNoWindow         = true,
+                StandardOutputEncoding = Encoding.UTF8
+            };
+
+            psi.ArgumentList.Add("run");
+            psi.ArgumentList.Add("--format");
+            psi.ArgumentList.Add("json");
+            psi.ArgumentList.Add("--dir");
+            psi.ArgumentList.Add(workDir);
+            if (!string.IsNullOrEmpty(resumeId))
+            {
+                psi.ArgumentList.Add("--session");
+                psi.ArgumentList.Add(resumeId);
+            }
+            psi.ArgumentList.Add(prompt);
+
+            // Same LocalSystem-profile override as the other two runners (see their
+            // own comments above) - OpenCode resolves its config/session storage under
+            // <profile>\.config\opencode and <profile>\.local\share\opencode via HOME,
+            // same as FindOpenCodeConfigPath already assumes.
+            if (!string.IsNullOrEmpty(profileDir))
+            {
+                psi.EnvironmentVariables["USERPROFILE"]  = profileDir;
+                psi.EnvironmentVariables["HOME"]         = profileDir;
+                psi.EnvironmentVariables["APPDATA"]      = Path.Combine(profileDir, "AppData", "Roaming");
+                psi.EnvironmentVariables["LOCALAPPDATA"] = Path.Combine(profileDir, "AppData", "Local");
+                psi.EnvironmentVariables["HOMEDRIVE"]    = Path.GetPathRoot(profileDir)?.TrimEnd('\\');
+                psi.EnvironmentVariables["HOMEPATH"]     = profileDir.Substring(Path.GetPathRoot(profileDir)?.TrimEnd('\\')?.Length ?? 0);
+            }
+
+            using var process = new Process { StartInfo = psi };
+            process.Start();
+
+            string? sessionId  = null;
+            string? resultText = null;
+            var isError   = false;
+            var gotResult = false;
+
+            string? line;
+            while ((line = await process.StandardOutput.ReadLineAsync()) != null)
+            {
+                if (string.IsNullOrWhiteSpace(line)) continue;
+                try
+                {
+                    using var doc = JsonDocument.Parse(line);
+                    var root = doc.RootElement;
+                    var type = root.TryGetProperty("type", out var t) ? t.GetString() : null;
+
+                    if (root.TryGetProperty("sessionID", out var sidEl) && sidEl.GetString() is { } sidValue)
+                        sessionId = sidValue;
+
+                    if (type == "text" &&
+                        root.TryGetProperty("part", out var part) &&
+                        !(part.TryGetProperty("synthetic", out var syn) && syn.ValueKind == JsonValueKind.True) &&
+                        part.TryGetProperty("text", out var txt))
+                    {
+                        var text = txt.GetString() ?? "";
+                        if (text.Length > 0)
+                        {
+                            resultText = text;
+                            await BroadcastSessionEventAsync("session_update", "OpenCode replied", Truncate(text, 500), cwd: workDir, agent: "opencode");
+                        }
+                    }
+                    else if (type == "step_finish" &&
+                             root.TryGetProperty("part", out var finishPart) &&
+                             finishPart.TryGetProperty("reason", out var reasonEl))
+                    {
+                        var reason = reasonEl.GetString();
+                        if (reason == "stop")
+                        {
+                            // The model gave a final answer with no pending tool calls -
+                            // the real end of this turn. Stop here, before OpenCode's own
+                            // synthetic "continue" nudge can restart the loop.
+                            gotResult = true;
+                            isError   = false;
+                            break;
+                        }
+                    }
+                    else if (type == "error")
+                    {
+                        gotResult = true;
+                        isError   = true;
+                        if (root.TryGetProperty("message", out var errMsg) && errMsg.GetString() is { } errText && errText.Length > 0)
+                            resultText = errText;
+                        break;
+                    }
+                }
+                catch (JsonException) { /* not every line is JSON we need - skip */ }
+            }
+
+            if (gotResult)
+            {
+                // Deliberately kill rather than wait for a natural exit - left running,
+                // this process would otherwise loop on its own synthetic "continue"
+                // nudge indefinitely (see comment above RunHeadlessOpenCodePromptAsync).
+                try { if (!process.HasExited) process.Kill(entireProcessTree: true); } catch { /* best effort */ }
+            }
+            try { await process.WaitForExitAsync(); } catch { /* already gone */ }
+
+            if (gotResult)
+            {
+                if (!isError && sessionId != null)
+                {
+                    OpenCodeProjectSessions[workDir] = sessionId;
+                    _ = Task.Run(SaveProjectState);
+                }
+                else if (isError && resumeId != null)
+                {
+                    // Same reasoning as the other two runners: a resumed run that still
+                    // failed means this session is no longer resumable - clear it so the
+                    // next message starts fresh instead of repeating the failure.
+                    OpenCodeProjectSessions.TryRemove(workDir, out _);
+                    _ = Task.Run(SaveProjectState);
+                    Console.WriteLine($"[SendPrompt] Resumed OpenCode run failed for {workDir} - cleared its pinned session, next message starts fresh");
+                }
+
+                await BroadcastSessionEventAsync(
+                    "prompt_result", isError ? "Prompt finished with an error" : "Prompt finished", Truncate(resultText ?? "", 3999), cwd: workDir, agent: "opencode");
+                Console.WriteLine($"[SendPrompt] OpenCode completed (is_error={isError}): {Truncate(resultText, 300)}");
+            }
+            else
+            {
+                await BroadcastSessionEventAsync(
+                    "prompt_result", "Prompt failed", $"Process exited with code {process.ExitCode} before producing a result.", cwd: workDir, agent: "opencode");
+                Console.WriteLine($"[SendPrompt] OpenCode run ended without a result message (exit code {process.ExitCode})");
+            }
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"[SendPrompt] Failed to run headless OpenCode prompt: {ex.Message}");
+            await BroadcastSessionEventAsync("prompt_result", "Prompt failed", ex.Message, cwd: workDir, agent: "opencode");
         }
         finally
         {
@@ -1506,9 +1732,11 @@ _ = Task.Run(async () =>
 RestoreClaudeCodeHooks();
 RestoreCodexHooks();
 RestoreAntigravityHooks();
+RestoreOpenCodeHooks();
 app.Lifetime.ApplicationStopping.Register(RemoveClaudeCodeHooks);
 app.Lifetime.ApplicationStopping.Register(RemoveCodexHooks);
 app.Lifetime.ApplicationStopping.Register(RemoveAntigravityHooks);
+app.Lifetime.ApplicationStopping.Register(RemoveOpenCodeHooks);
 
 app.Run();
 
@@ -1832,6 +2060,38 @@ static (string? CliPath, string? UserProfile) FindCodexCliInfo()
             .OrderByDescending(File.GetLastWriteTimeUtc)
             .FirstOrDefault();
         if (exePath != null) return (exePath, dir);
+    }
+
+    return (null, null);
+}
+
+// OpenCode ships as a global npm package (`npm install -g opencode-ai`), installing
+// its actual platform binary under
+// <profile>\AppData\Roaming\npm\node_modules\opencode-ai\node_modules\opencode-<platform>\bin\opencode.exe
+// - the opencode.cmd/opencode.ps1 shims on PATH just relaunch that same binary via
+// node. Spawning the platform binary directly (confirmed live it runs standalone,
+// no node.exe wrapper required) avoids an extra shim/shell layer, same reasoning as
+// FindClaudeCliInfo resolving straight to the VS Code extension's bundled
+// claude.exe. "-baseline" is npm's fallback variant for older CPUs lacking certain
+// instruction sets - only one of the two is normally functional on a given machine,
+// so try the standard build first. Same "scan C:\Users\*" pattern as
+// FindClaudeCliInfo/FindCodexCliInfo, since this runs as LocalSystem and needs the
+// real user's profile dir for the same env-var override reason.
+static (string? CliPath, string? UserProfile) FindOpenCodeCliInfo()
+{
+    var usersRoot = @"C:\Users";
+    if (!Directory.Exists(usersRoot)) return (null, null);
+
+    foreach (var dir in Directory.GetDirectories(usersRoot))
+    {
+        var opencodeAiDir = Path.Combine(dir, "AppData", "Roaming", "npm", "node_modules", "opencode-ai", "node_modules");
+        if (!Directory.Exists(opencodeAiDir)) continue;
+
+        foreach (var variant in new[] { "opencode-windows-x64", "opencode-windows-x64-baseline" })
+        {
+            var exePath = Path.Combine(opencodeAiDir, variant, "bin", "opencode.exe");
+            if (File.Exists(exePath)) return (exePath, dir);
+        }
     }
 
     return (null, null);
@@ -2179,6 +2439,113 @@ static void RemoveAntigravityHooks()
     catch (Exception ex)
     {
         Console.WriteLine($"[Antigravity] Warning: could not remove hooks: {ex.Message}");
+    }
+}
+
+// OpenCode's hook mechanism is architecturally different from the other three IDEs - a
+// JS/TS plugin loaded into OpenCode's own process (registered via opencode.json's
+// "plugin" array), not a PowerShell script invoked per event via a JSON hooks config.
+// Confirmed live (2026-07-13): OpenCode follows XDG-style config conventions even on
+// Windows - its real global config lives under <profile>\.config\opencode\, not
+// <profile>\.opencode\. Same "scan C:\Users\* for a real profile" pattern as the other
+// Find*Path helpers, since this runs as LocalSystem.
+static string? FindOpenCodeConfigPath()
+{
+    var usersRoot = @"C:\Users";
+    if (Directory.Exists(usersRoot))
+    {
+        foreach (var dir in Directory.GetDirectories(usersRoot))
+        {
+            var openCodeConfigDir = Path.Combine(dir, ".config", "opencode");
+            if (Directory.Exists(openCodeConfigDir))
+                return Path.Combine(openCodeConfigDir, "opencode.json");
+        }
+    }
+
+    var direct = Path.Combine(
+        Environment.GetFolderPath(Environment.SpecialFolder.UserProfile),
+        ".config", "opencode", "opencode.json");
+    return direct;
+}
+
+const string OpenCodePluginPath = @"C:/ProgramData/AethelHook/hooks/opencode/aethelhook-plugin.js";
+
+static void RestoreOpenCodeHooks()
+{
+    try
+    {
+        var configPath = FindOpenCodeConfigPath();
+        if (configPath == null)
+        {
+            Console.WriteLine("[OpenCode] Warning: could not locate .config\\opencode directory - plugin not registered");
+            return;
+        }
+
+        Directory.CreateDirectory(Path.GetDirectoryName(configPath)!);
+
+        // opencode.json is more likely than Codex's AethelHook-owned hooks.json to hold
+        // real user config (providers, agents, other plugins) - merge into the "plugin"
+        // array rather than overwriting the whole file, mirroring
+        // RestoreClaudeCodeHooks()'s preserve-existing-keys approach.
+        JsonObject config;
+        if (File.Exists(configPath))
+        {
+            config = JsonNode.Parse(File.ReadAllText(configPath)) as JsonObject ?? new JsonObject();
+        }
+        else
+        {
+            config = new JsonObject();
+        }
+
+        if (config["plugin"] is not JsonArray plugins)
+        {
+            plugins = new JsonArray();
+            config["plugin"] = plugins;
+        }
+        var existing = plugins.Select(x => x?.GetValue<string>() ?? "").ToHashSet();
+        if (!existing.Contains(OpenCodePluginPath))
+            plugins.Add(JsonValue.Create(OpenCodePluginPath));
+
+        File.WriteAllText(configPath, config.ToJsonString(new JsonSerializerOptions { WriteIndented = true }));
+        Console.WriteLine($"[OpenCode] Plugin registered in {configPath}");
+    }
+    catch (Exception ex)
+    {
+        Console.WriteLine($"[OpenCode] Warning: could not restore plugin registration: {ex.Message}");
+    }
+}
+
+static void RemoveOpenCodeHooks()
+{
+    try
+    {
+        var configPath = FindOpenCodeConfigPath();
+        if (configPath == null || !File.Exists(configPath)) return;
+
+        var config = JsonNode.Parse(File.ReadAllText(configPath)) as JsonObject;
+        if (config == null) return;
+
+        if (config["plugin"] is JsonArray plugins)
+        {
+            var kept = plugins.Select(x => x?.GetValue<string>() ?? "")
+                              .Where(s => s != OpenCodePluginPath)
+                              .ToList();
+            if (kept.Count == 0)
+                config.Remove("plugin");
+            else
+            {
+                var newPlugins = new JsonArray();
+                foreach (var s in kept) newPlugins.Add(JsonValue.Create(s));
+                config["plugin"] = newPlugins;
+            }
+        }
+
+        File.WriteAllText(configPath, config.ToJsonString(new JsonSerializerOptions { WriteIndented = true }));
+        Console.WriteLine("[OpenCode] Plugin unregistered from opencode.json - native OpenCode approvals active");
+    }
+    catch (Exception ex)
+    {
+        Console.WriteLine($"[OpenCode] Warning: could not remove plugin registration: {ex.Message}");
     }
 }
 

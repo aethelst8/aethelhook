@@ -69,6 +69,7 @@ object AppPrefs {
     private const val KEY_DARK_MODE              = "dark_mode"
     private const val KEY_GATEWAY_ENABLED        = "gateway_enabled"
     private const val KEY_CODEX_GATEWAY_ENABLED  = "codex_gateway_enabled"
+    private const val KEY_OPENCODE_GATEWAY_ENABLED = "opencode_gateway_enabled"
     private const val KEY_API_TOKEN              = "api_token"
     private const val KEY_CERT_FINGERPRINT       = "cert_fingerprint"
 
@@ -144,7 +145,7 @@ object AppPrefs {
     fun setTimeout(ctx: Context, secs: Int) =
         securePrefs(ctx).edit { putInt(KEY_TIMEOUT, secs) }
 
-    // ── Session Access: last-picked agent ("claude" or "codex"), sticky like the project ──
+    // ── Session Access: last-picked agent ("claude", "codex", or "opencode"), sticky like the project ──
 
     fun getLastAgent(ctx: Context): String =
         securePrefs(ctx).getString(KEY_LAST_AGENT, "claude") ?: "claude"
@@ -247,6 +248,12 @@ object AppPrefs {
 
     fun setCodexGatewayEnabled(ctx: Context, enabled: Boolean) =
         securePrefs(ctx).edit { putBoolean(KEY_CODEX_GATEWAY_ENABLED, enabled) }
+
+    fun getOpenCodeGatewayEnabled(ctx: Context): Boolean =
+        securePrefs(ctx).getBoolean(KEY_OPENCODE_GATEWAY_ENABLED, true)
+
+    fun setOpenCodeGatewayEnabled(ctx: Context, enabled: Boolean) =
+        securePrefs(ctx).edit { putBoolean(KEY_OPENCODE_GATEWAY_ENABLED, enabled) }
 
     // ── API token (shared secret - auto-populated from UDP beacon) ────────────
 
