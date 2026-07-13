@@ -1,7 +1,9 @@
 # AethelHook - Working Notes for Claude Code
 
 AI agent permission gateway: routes dangerous tool calls (and now phone-initiated
-prompts) between Claude Code / Codex / Antigravity / OpenCode and an Android phone. See
+prompts) between Claude Code / Codex / OpenCode and an Android phone. Antigravity
+support exists in code (see gotcha #29) but is no longer shipped - a fresh install
+does not configure it. See
 `README.md` for the public-facing product description; this file is the current,
 continuously-maintained technical reference - keep it up to date as things change,
 don't let it go stale like the archived docs in `docs/archive/` (including the old
@@ -707,6 +709,39 @@ security work since done - see README.md instead).
     Debug APK rebuilt and reinstalled via `adb install -r`. Session Access is now at
     feature parity across all three headless-capable agents (Claude, Codex,
     OpenCode) - Antigravity remains approval-gate-only per gotcha #26.
+29. **Stopped shipping Antigravity (2026-07-13) - a real deny-bypass bug, not just the
+    already-known missing Stop hook.** Reported by the user testing on a second PC and
+    reproduced on this dev machine too: denying a tool call on the phone still let the
+    tool run. `hook_debug.log` showed the hook itself doing everything right - a real
+    "Internal decision: deny" / "Decision: DENY" for a `replace_file_content` call,
+    with the exact `{"hookSpecificOutput":{"permissionDecision":"deny",...}}` + exit 2
+    response `ANTIGRAVITY_HOOKS.md`'s own Q5 documents as a "hard enforcement boundary,
+    no bypass path" - so the bypass is downstream of the hook script, inside
+    Antigravity itself. Prime suspect: gotcha #26's fix set both **Terminal Command
+    Auto Execution** and **Review Policy** to **Always Proceed** to kill Antigravity's
+    own redundant confirmation dialog - "Always Proceed" may not just hide the dialog,
+    it may tell the engine to proceed regardless of any hook's decision. Tried
+    reverting just Review Policy back to its original value to isolate which of the
+    two settings was responsible - **did not fix it**, so the bypass isn't explained by
+    that one setting alone (or reverting it alone isn't sufficient), and the actual
+    mechanism is still unresolved. Combined with the pre-existing gaps (gotcha #26's
+    Stop hook never firing, no Session Access), decided it's not worth shipping in
+    this state. Fix: removed Antigravity entirely from what a fresh install
+    configures - dropped the two `dist\hooks\gemini\*` lines from `AethelHook.iss`'s
+    `[Files]` and the whole Antigravity block from `dist\install_hooks.ps1` (both
+    live-verified: rebuilt `AethelHook-Setup.exe`, no `gemini` folder or hooks.json
+    entry created on install). **Explicitly not deleted**: `Program.cs`'s
+    `RestoreAntigravityHooks()`/`RemoveAntigravityHooks()`/gateway endpoints, the
+    `.gemini\hooks\*.ps1` scripts, `dist\hooks\gemini\*.ps1`, and
+    `ANTIGRAVITY_HOOKS.md` - all left in place in case the bypass gets root-caused
+    later, they're just no longer wired into a new install. This dev machine's own
+    live service is unaffected (still runs `RestoreAntigravityHooks()` on every
+    startup, since that's Program.cs's own runtime behavior, not installer-time) -
+    only *new* installs from the rebuilt installer lack Antigravity config. Website
+    (aethelst8.com) updated the same day to drop every Antigravity mention -
+    Hero/Features/Setup back to 3-agent framing, `GuideApprove.jsx`'s whole
+    Antigravity subsection removed, `README.md` also updated (was already stale,
+    missing OpenCode entirely).
 
 ## Key file paths
 
@@ -747,6 +782,31 @@ dotnet publish AethelHook.Tray\AethelHook.Tray.csproj -c Release -r win-x64 --se
 significant work session, the same way you'd update any other session/handoff file.
 Older entries can be trimmed once they're no longer relevant; this isn't a full
 changelog (see git history / memory for that), just enough to orient the next session.*
+
+**As of 2026-07-13 (Antigravity dropped from what ships; OpenCode gets its missing
+Sessions-chat activity feed):**
+
+- **Full detail in gotcha #29 above.** Short version: the user found a real
+  deny-bypass bug in Antigravity (denying a tool call didn't actually block it),
+  reproduced on this dev machine too, and confirmed via `hook_debug.log` that
+  AethelHook's own hook was doing everything right - the bypass is inside
+  Antigravity itself, downstream of the hook. Tried reverting the Review Policy
+  setting from gotcha #26 to isolate it - didn't fix it, root cause still unknown.
+  Combined with the pre-existing gaps (no Stop-hook notification, no Session
+  Access), decided to stop shipping it: removed it from `AethelHook.iss`'s
+  `[Files]` and from `dist\install_hooks.ps1`, rebuilt and re-uploaded
+  `AethelHook-Setup.exe` to the `v1.0.0` release (`AppVersion` stays 1.2 - a scope
+  correction, not a new version). Implementation intentionally left in place
+  (`Program.cs`, `.gemini\hooks\*.ps1`, `ANTIGRAVITY_HOOKS.md`) in case it's fixed
+  later. Website (aethelst8.com) and `README.md` both updated to drop every
+  Antigravity mention, back to 3-agent framing (Claude Code, Codex, OpenCode).
+- **Also fixed the same day**: OpenCode's Sessions chat stayed empty during real
+  interactive use (notifications and Session Access replies both worked, but no
+  per-tool activity ever showed) - the plugin had no equivalent to the other
+  agents' `on_tool_done.ps1`. Added a `"tool.execute.after"` handler posting to
+  `/hook/session-update`, deployed live (dev/dist/live copies in sync), confirmed
+  the approval flow still fires correctly; the user separately confirmed the fix
+  itself works.
 
 **As of 2026-07-13 (OpenCode Session Access added - headless phone prompts now work
 for all three headless-capable agents):**
