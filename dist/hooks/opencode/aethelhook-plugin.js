@@ -8,6 +8,15 @@
 //   - "tool.execute.before" fires reliably for real tool calls and reliably BLOCKS
 //     the call when it throws - the agent receives a genuine tool-execution error,
 //     not a silent bypass.
+//   - "tool.execute.after" fires once the tool call completes - args live on
+//     `input.args` here (not `output.args` like "before"). Nothing was posting a
+//     per-tool "still working" update from this hook, unlike the other three IDEs'
+//     PostToolUse-equivalent scripts (on_tool_done.ps1 etc.) which fire on every
+//     tool call, headless or interactive, and push a live activity bubble into the
+//     phone's Sessions chat - this is why that chat stayed empty for OpenCode
+//     during real interactive use even though notifications and Session Access
+//     replies both worked (confirmed live 2026-07-13, reported by the user testing
+//     on a second PC).
 //   - OpenCode's own documented "permission.ask" hook is defined in the plugin SDK
 //     types but is NEVER actually triggered (confirmed both by our own testing and by
 //     an open upstream bug, google/opencode - anomalyco/opencode#7006, filed Jan 2026,
@@ -179,6 +188,25 @@ export const AethelHookPlugin = async (ctx) => {
           throw new Error("Denied via phone");
         default:
           throw new Error("No phone response (timed out)");
+      }
+    },
+
+    "tool.execute.after": async (input) => {
+      const toolName = input.tool;
+      const preview = buildPreview(toolName, input.args);
+      const detail = preview.length > 150 ? preview.slice(0, 150) + "..." : preview;
+      try {
+        await apiFetch("/hook/session-update", {
+          method: "POST",
+          body: JSON.stringify({
+            message: "Still working...",
+            detail,
+            tool_name: toolName,
+            cwd: directory,
+          }),
+        });
+      } catch (e) {
+        log(`POST /hook/session-update failed: ${e}`);
       }
     },
 

@@ -1,13 +1,19 @@
 # Called by the installer to wire AethelHook hooks into Claude Code settings.json,
-# Codex's hooks.json, and Antigravity's global hooks.json.
+# Codex's hooks.json, and OpenCode's opencode.json.
 # Receives the actual user's profile path as $args[0] (passed by Inno Setup {userprofile}).
 # Mirrors AethelHook.API\Program.cs's RestoreClaudeCodeHooks()/RestoreCodexHooks()/
-# RestoreAntigravityHooks() - keep all in sync. This script runs once at install time,
+# RestoreOpenCodeHooks() - keep all in sync. This script runs once at install time,
 # using the real installing user's profile (reliable even under UAC elevation); the
 # Program.cs functions re-apply on every service start, but run as the SYSTEM service
 # account, which can't reliably resolve the real user's profile on a truly fresh
-# machine with no existing .claude/.codex/.gemini folder - this bootstrap step is what
-# makes first install work before those folders exist.
+# machine with no existing .claude/.codex/.config\opencode folder - this bootstrap
+# step is what makes first install work before those folders exist.
+#
+# Antigravity is NOT configured here (2026-07-13): its approval gate has an
+# unresolved deny-bypass issue, so AethelHook no longer ships/enables it for new
+# installs. The implementation (Program.cs's RestoreAntigravityHooks(), the
+# .gemini\hooks\*.ps1 scripts, ANTIGRAVITY_HOOKS.md) is left in the repo untouched
+# in case it gets fixed later, it just isn't wired into a fresh install anymore.
 
 param([string]$UserProfile)
 if (-not $UserProfile) { $UserProfile = $env:USERPROFILE }
@@ -102,33 +108,6 @@ $codexHooks = [PSCustomObject]@{
     }
 }
 $codexHooks | ConvertTo-Json -Depth 10 | Out-File $codexHooksPath -Encoding utf8NoBOM -Force
-
-# --- Antigravity: C:\Users\<user>\.gemini\config\hooks.json (global scope) ---
-$geminiConfigDir = "$UserProfile\.gemini\config"
-$geminiHooksPath = "$geminiConfigDir\hooks.json"
-$geminiApprovalCmd = "powershell.exe -ExecutionPolicy Bypass -File $hooksDir\gemini\on_approval_request.ps1"
-$geminiDoneCmd     = "powershell.exe -ExecutionPolicy Bypass -File $hooksDir\gemini\on_task_complete.ps1"
-
-New-Item -ItemType Directory -Force -Path $geminiConfigDir | Out-Null
-function GeminiMatcherHook($matcher) {
-    [PSCustomObject]@{ matcher = $matcher; hooks = @([PSCustomObject]@{ type = "command"; command = $geminiApprovalCmd; timeout = 90 }) }
-}
-$geminiDoneHook = @([PSCustomObject]@{ hooks = @([PSCustomObject]@{ type = "command"; command = $geminiDoneCmd; timeout = 5 }) })
-$geminiHooks = [PSCustomObject]@{
-    hooks = [PSCustomObject]@{
-        PreToolUse = @(
-            GeminiMatcherHook "run_command"
-            GeminiMatcherHook "write_file"
-            GeminiMatcherHook "replace_file_content"
-            GeminiMatcherHook "multi_replace_file_content"
-            GeminiMatcherHook "write_to_file"
-        )
-        SessionEnd = $geminiDoneHook
-        AfterAgent = $geminiDoneHook
-        Stop       = $geminiDoneHook
-    }
-}
-$geminiHooks | ConvertTo-Json -Depth 10 | Out-File $geminiHooksPath -Encoding utf8NoBOM -Force
 
 # --- OpenCode: C:\Users\<user>\.config\opencode\opencode.json (global scope) ---
 # Architecturally different from the other three - OpenCode's hook mechanism is a JS
