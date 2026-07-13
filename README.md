@@ -9,7 +9,7 @@
 
 ## What it is
 
-When an AI coding agent - **Claude Code**, **Codex**, or **Antigravity** - wants to run a
+When an AI coding agent - **Claude Code**, **Codex**, or **OpenCode** - wants to run a
 shell command, write a file, or do anything else on your PC, AethelHook routes that
 request to your Android phone first. You get a notification, tap Allow or Deny, and the
 agent proceeds or stops. In real time, from anywhere your phone has a connection.
@@ -21,16 +21,16 @@ click through on autopilot. AethelHook forces that decision onto a second device
 approving something dangerous takes a deliberate action, not a reflex.
 
 It also lets you send prompts *to* your PC from your phone - kick off a headless
-Claude Code or Codex run in a known project directory and get the result pushed back,
-without touching the keyboard.
+Claude Code, Codex, or OpenCode run in a known project directory and get the result
+pushed back, without touching the keyboard.
 
-**Note:** this means the Claude Code CLI and its VS Code extension, and the Codex CLI
-and IDE. It does not work with the regular Claude app or claude.ai - those are a
-different product with no hook mechanism to route through.
+**Note:** this means the Claude Code CLI and its VS Code extension, the Codex CLI and
+IDE, and the OpenCode CLI. It does not work with the regular Claude app or claude.ai -
+those are a different product with no hook mechanism to route through.
 
 ## Features
 
-- **Multi-IDE**: Claude Code, Codex, and Antigravity, each via their own native hook
+- **Multi-agent**: Claude Code, Codex, and OpenCode, each via their own native hook
   mechanism, all routed through the same gateway.
 - **Real-time approval** over a TLS + certificate-pinned WebSocket (LAN or Tailscale) -
   no cloud relay, no third-party push service in the loop.
