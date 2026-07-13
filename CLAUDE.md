@@ -516,9 +516,12 @@ security work since done - see README.md instead).
       Claude Code's `send_plan_key.ps1`/`send_answer_key.ps1` pattern) - built,
       wired in, then **fully reverted same session** at explicit user request
       ("I don't like this keystroke approach, it's dangerous"). The actual fix
-      needed no code at all: Settings > Permissions has **"Terminal Command Auto
-      Execution"** (Terminal section - set to **"Always Proceed"**) and **"Review
-      Policy"** (Planning section - set to **"Auto Accept"**). Both default to
+      needed no code at all: Settings (**Ctrl + ,**) > Permissions has **"Terminal
+      Command Auto Execution"** (Terminal section) and **"Review Policy"** (Planning
+      section) - as of 2026-07-13, both are set to **"Always Proceed"** (corrected
+      from an earlier note that had Review Policy at "Auto Accept" - either the
+      option was renamed since, or that was wrong the first time; confirmed current
+      by the user directly). Both default to
       requiring manual confirmation; setting both removes Antigravity's own native
       dialog entirely for `run_command` and for file edits, leaving AethelHook's
       `PreToolUse` hook (`deny` = hard block, confirmed independent of any dialog)
@@ -773,10 +776,48 @@ for all three headless-capable agents):**
   exercised the same flow from their own phone against a different project directory
   while this was being verified. Debug APK rebuilt (`assembleDebug`) and reinstalled
   via `adb install -r`.
-- **Not yet done**: this hasn't been baked into the friend-facing installer/rebuilt
-  `AethelHook-Setup.exe` yet - only the dev machine's live service and debug APK are
-  confirmed on this change so far, same as the approval-gate-only OpenCode work
-  earlier the same day.
+- **Superseded by the full release below** - this was true at the time but the
+  friend-facing installer and a signed release APK have since been built and shipped.
+
+**As of 2026-07-13 (release finalized - v1.1.0 Android / v1.2 Windows installer,
+website fully updated for all 4 agents):**
+
+- **Full distribution pipeline run end to end**: `dotnet build`/`publish` for both
+  API and Tray, signed Android release APK via `gradlew assembleRelease`, and
+  `AethelHook-Setup.exe` recompiled via `ISCC.exe` - all baked in together (OpenCode
+  Session Access + notification fix + the Android 3-way agent toggle + the
+  Antigravity `cwd` fix + OpenCode's installer entries, several of which had been
+  sitting uncommitted from earlier in the day).
+- **Versions bumped for the first time this cycle**: Android `versionCode` 4 -> 5,
+  `versionName` "1.0.3" -> "1.1.0"; Windows installer `AppVersion` "1.1" -> "1.2".
+  Committed and pushed to `main` (`09aa474`).
+- **Installed the new release APK on the dev phone** - required an uninstall first
+  since the phone had a *debug* build installed (from the OpenCode toggle testing
+  earlier that day) and debug/release signing keys differ, same gotcha as the
+  2026-07-09 distribution entry below. This wiped the phone's local pairing token,
+  requiring a fresh QR re-pair - **hit the self-gating gotcha live**: with the phone
+  unpaired, this very session's own `PowerShell` tool call (compiling the installer)
+  hung and was auto-denied on timeout, since AethelHook's own approval gate had no
+  phone to reach. Resolved by having the user re-pair before retrying.
+  See [[project_aethelhook_self_gating_gotcha]].
+- **New GitHub release `v1.1.0`** created with `aethelhook_v1.1.0.apk` (Android,
+  following the per-version-tag convention); the rebuilt `AethelHook-Setup.exe` was
+  uploaded to the *existing* `v1.0.0` release with `--clobber`, continuing the
+  established convention that the Windows installer's own `AppVersion` is
+  independent of its GitHub release tag.
+- **Website fully updated for 4-agent coverage** (separate repo,
+  `aethelst8.github.io`): Hero/Features/Setup copy, full per-agent setup
+  instructions added to the main setup guide (Codex's Settings > Hooks Trust-button
+  step with a real screenshot, Antigravity's two IDE settings plus its documented
+  Stop-hook gap, OpenCode's `npm install -g opencode-ai` requirement), Session
+  Access explicitly scoped to Claude Code/Codex/OpenCode only (Antigravity has no
+  headless mode), the phone dashboard screenshot swapped for one showing the 3-way
+  agent toggle, and the Android download link bumped to `v1.1.0`. Built, linted, and
+  pushed (`c10e8fb`) - GitHub Actions redeployed successfully.
+- **Corrected a stale detail while writing the site copy**: gotcha #26's original
+  note had Antigravity's "Review Policy" setting at "Auto Accept" - the user
+  confirmed live it's actually "Always Proceed" (same value as "Terminal Command
+  Auto Execution"), corrected in both places gotcha #26 mentions it.
 
 **As of 2026-07-13 (OpenCode added as a 4th approval-gated agent, approval-gate only):**
 
@@ -836,9 +877,9 @@ real approval-dialog fix, Stop hook still unresolved):**
 - **Antigravity's native approval dialogs turned out to be an IDE settings problem,
   not a hooks.json problem.** Tried keystroke injection first
   (`send_antigravity_key.ps1`), then fully reverted it same-session at explicit user
-  request. The real fix needed zero code: Settings > Permissions >
+  request. The real fix needed zero code: Settings (**Ctrl + ,**) > Permissions >
   **"Terminal Command Auto Execution" = "Always Proceed"** and **"Review Policy" =
-  "Auto Accept"** - both live-verified working, with AethelHook's `PreToolUse` hook
+  "Always Proceed"** - both live-verified working, with AethelHook's `PreToolUse` hook
   now the sole real gate (same precedent as Codex's `approval_policy="never"`).
 - **Still open**: `Stop`/`AfterAgent`/`SessionEnd` never fire at all, even after the
   missing-file fix and a full Antigravity restart. Best lead so far is a
