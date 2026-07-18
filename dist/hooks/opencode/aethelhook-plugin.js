@@ -53,6 +53,68 @@ function addToPhoneAllow(fullCommand) {
   try { fs.appendFileSync(PHONE_ALLOW_PATH, fullCommand + "\n", { encoding: "utf8" }); } catch (e) { /* best effort */ }
 }
 
+// Loop-repetition guard for OpenCode's own "doom loop" bug (confirmed live 2026-07-13,
+// see RunHeadlessOpenCodePromptAsync's kill-after-stop comment in Program.cs) - after a
+// genuine reply, OpenCode injects a synthetic "Continue if you have next steps..."
+// nudge and keeps looping, re-running the same read-only status/log/diff checks every
+// ~80s indefinitely. The headless runner works around this by killing the process
+// after the first "stop" - but a plain INTERACTIVE `opencode` session (a terminal the
+// user left open) has no such guard, and each loop iteration re-fires
+// tool.execute.before, spamming a fresh phone notification roughly every 80s, for as
+// long as the terminal sits there (confirmed live: 12:49-15:00+, over 2 hours,
+// continuous git status/log/diff approval requests from one stuck session).
+//
+// Fix: once the phone has explicitly approved the EXACT same command
+// REPEAT_THRESHOLD times within REPEAT_WINDOW_MS, further repeats of that exact string
+// auto-approve without a new notification - deliberately scoped to a tight allowlist of
+// read-only git subcommands only (never anything that writes/deletes), and requires
+// real human approval first each time before any auto-approval kicks in, rather than a
+// blanket "it repeated so it must be safe" rule. In-memory only (resets whenever this
+// OpenCode process restarts) - this is meant to tame an ACTIVE runaway loop within one
+// live session, not become a permanent standing rule like phone_allow.txt.
+const REPEAT_WINDOW_MS = 15 * 60 * 1000;
+const REPEAT_THRESHOLD = 2;
+const approvalHistory = new Map(); // fullCommand -> { approvals, lastSeenAt }
+
+// Only a tight allowlist of git's own read-only subcommands - fails closed (returns
+// false) if ANY chained segment (split on &&/;/||/|) doesn't match, so something like
+// "git status && rm -rf ." can never slip through as "read-only" just because its
+// first segment looks safe.
+const READ_ONLY_GIT_SUBCOMMANDS = new Set([
+  "status", "log", "diff", "show", "branch", "remote",
+  "rev-parse", "describe", "blame", "shortlog", "ls-files", "ls-tree", "cat-file"
+]);
+function isReadOnlyGitCommand(fullCommand) {
+  const segments = fullCommand.split(/&&|\|\||[;|]/).map(s => s.trim()).filter(Boolean);
+  if (segments.length === 0) return false;
+  return segments.every(seg => {
+    const parts = seg.split(/\s+/);
+    return parts[0] === "git" && READ_ONLY_GIT_SUBCOMMANDS.has(parts[1]);
+  });
+}
+
+function checkRepeatAutoApprove(fullCommand) {
+  const entry = approvalHistory.get(fullCommand);
+  if (!entry) return false;
+  if (Date.now() - entry.lastSeenAt > REPEAT_WINDOW_MS) {
+    approvalHistory.delete(fullCommand);
+    return false;
+  }
+  return entry.approvals >= REPEAT_THRESHOLD;
+}
+
+function recordDecision(fullCommand, wasApproved) {
+  if (!isReadOnlyGitCommand(fullCommand)) return; // only ever track the safe subset
+  if (!wasApproved) {
+    approvalHistory.delete(fullCommand); // any denial resets trust for this exact command
+    return;
+  }
+  const entry = approvalHistory.get(fullCommand) || { approvals: 0, lastSeenAt: 0 };
+  entry.approvals += 1;
+  entry.lastSeenAt = Date.now();
+  approvalHistory.set(fullCommand, entry);
+}
+
 const API_BASE = "http://localhost:5266";
 
 async function apiFetch(path, options = {}) {
@@ -118,11 +180,27 @@ export const AethelHookPlugin = async (ctx) => {
   return {
     "tool.execute.before": async (input, output) => {
       const toolName = input.tool;
+
+      // Claude Code's own hook config never gates TodoWrite at all - it isn't in
+      // settings.json's PreToolUse matcher list, since it's pure internal task-list
+      // bookkeeping with no filesystem/execution side effects. OpenCode's plugin gates
+      // every tool with no such exemption, which is what made a stuck/looping OpenCode
+      // session's own todo-list updates spam phone approvals for something with zero
+      // real-world impact (confirmed live: no Write/Edit approval ever accompanied
+      // these calls). Match Claude Code's own precedent instead of partially covering
+      // it via the repeat-tracker below.
+      if (toolName === "todowrite") return;
+
       const preview = buildPreview(toolName, output && output.args);
       const fullCommand = preview.trim();
 
       if (isPhoneAllowed(fullCommand)) {
         log(`'${fullCommand}' is in phone allow list - auto-approving silently`);
+        return;
+      }
+
+      if (isReadOnlyGitCommand(fullCommand) && checkRepeatAutoApprove(fullCommand)) {
+        log(`'${fullCommand}' auto-approved (repeated read-only command, already approved ${REPEAT_THRESHOLD}+ times in the last ${REPEAT_WINDOW_MS / 60000}min)`);
         return;
       }
 
@@ -177,16 +255,20 @@ export const AethelHookPlugin = async (ctx) => {
       switch (decision) {
         case "allow":
         case "allow_once":
+          recordDecision(fullCommand, true);
           return; // let the tool proceed
         case "always_allow_project":
         case "always_allow_global":
           addToPhoneAllow(fullCommand);
           return;
         case "deny_with_reason":
+          recordDecision(fullCommand, false);
           throw new Error(reason || "User declined via phone");
         case "deny":
+          recordDecision(fullCommand, false);
           throw new Error("Denied via phone");
         default:
+          recordDecision(fullCommand, false);
           throw new Error("No phone response (timed out)");
       }
     },

@@ -83,6 +83,7 @@ try {
     $body = @{
         session_id = $sessionId
         plan       = $plan
+        cwd        = if ($inputData.cwd) { $inputData.cwd } else { "" }
     } | ConvertTo-Json -Compress
 
     Log "Posting plan to API with session $sessionId ..."

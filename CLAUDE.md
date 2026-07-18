@@ -742,6 +742,45 @@ security work since done - see README.md instead).
     Hero/Features/Setup back to 3-agent framing, `GuideApprove.jsx`'s whole
     Antigravity subsection removed, `README.md` also updated (was already stale,
     missing OpenCode entirely).
+30. **`QuestionActivity.kt`'s single-select radio options and its "Other" option
+    updated `QuestionAnswerState` independently, so they could end up mutually
+    non-exclusive** - reported by the user via a real screenshot (2026-07-14): a
+    single-select `AskUserQuestion` on the phone showed both a normal option AND
+    "Other" as selected (both radio circles filled) at once. Root cause: tapping
+    "Other" correctly cleared `state.selected = emptySet()` (`QuestionCard`'s
+    second `OptionRow`'s `onClick`), but tapping a normal option only ever set
+    `state.selected = setOf(opt.label)` - it never reset `state.otherSelected` back
+    to `false`. So the repro was: tap "Other" (`otherSelected=true`), then tap a
+    normal option (`selected` updates, `otherSelected` stays stuck `true` forever,
+    since nothing else ever clears it). Not just cosmetic - `toAnswerValue()`
+    appends the Other text whenever `otherSelected` is still true, so a submit in
+    this state could send the wrong/extra value to `/hook/answer`. Fix: the normal
+    -option `onClick` (non-multiSelect branch) now also sets
+    `state.otherSelected = false`. Live-verified: rebuilt debug APK
+    (`assembleDebug`), reinstalled via `adb install -r` (required an uninstall
+    first - phone had the signed release APK, same debug/release signing-key
+    mismatch as prior sessions - user re-paired via QR afterward), triggered a real
+    `AskUserQuestion` through this same Claude Code session, tapped Other then a
+    normal option - user confirmed only the normal option stayed highlighted.
+31. **`MainActivity.kt`'s Settings > About card hardcoded `"ÆthelHook v1.0"` as a
+    literal string, never updated across 3 real version bumps** (1.0 -> 1.0.1 ->
+    1.0.3 -> 1.1.0) - `build.gradle.kts`'s `versionName` was the only place that
+    ever got bumped for each release, so the on-device About screen had been
+    silently wrong since the very first version bump. Found by the user noticing
+    it didn't match the other version references (installer/GitHub release tags)
+    in this same session (2026-07-14). Fix: read the real value from
+    `BuildConfig.VERSION_NAME` instead - required adding `buildConfig = true` to
+    `android.buildFeatures` in `app/build.gradle.kts` first, since AGP doesn't
+    generate the `BuildConfig` class at all unless a module opts in (confirmed via
+    `generateDebugBuildConfig` only appearing in the Gradle task graph after this
+    was added). Live-verified: rebuilt both debug and a signed release APK,
+    installed the release build on the dev phone (uninstall-then-install again,
+    same signing-key mismatch as gotcha #30's fix - re-paired via QR), user
+    confirmed Settings > About now reads "v1.1.0" correctly. **Version number
+    deliberately not bumped** for this fix, per explicit user request - the
+    rebuilt APK was instead uploaded to the *existing* `v1.1.0` GitHub release
+    (`gh release upload v1.1.0 aethelhook_v1.1.0.apk --clobber`), the same
+    tag-reupload convention used for prior installer-only rebuilds.
 
 ## Key file paths
 
@@ -783,8 +822,24 @@ significant work session, the same way you'd update any other session/handoff fi
 Older entries can be trimmed once they're no longer relevant; this isn't a full
 changelog (see git history / memory for that), just enough to orient the next session.*
 
-**As of 2026-07-13 (Antigravity dropped from what ships; OpenCode gets its missing
-Sessions-chat activity feed):**
+**As of 2026-07-16 (r/LookWhatTheyBuilt launch post drafted, first Reddit testimonial
+added to the site):**
+
+- **Drafted a Reddit launch post for r/LookWhatTheyBuilt** (this had been sitting as
+  "not yet drafted" since the 2026-07-12 entry below) - subreddit-appropriate format,
+  title + flair + short body with emoji-linked profiles, matching how other posts in
+  that sub are actually written rather than a generic press-release style. Points to
+  `https://aethelst8.com` and `https://github.com/aethelst8/aethelhook`, credited as
+  `aethelst8`, screenshot is `https://aethelst8.com/media/mobile-app-dashboard.jpeg`
+  (verified live with a direct `curl -I` before including it - HTTP 200, image/jpeg,
+  57KB). Not yet actually submitted to Reddit by the user.
+- **Added the site's second testimonial** (`aethelst8.github.io`'s `Reviews.jsx`) from
+  a real comment on that draft post praising the Windows Hello/WinRT interop work
+  (gotcha #24) as the unglamorous part that ends up taking most of the real
+  development time - cleaned up a couple of typos in the quote for readability
+  (kept the meaning intact) before adding it, using the existing `RedditIcon`
+  component (already used for the footer social link). Lint passed clean, committed
+  and pushed to `aethelst8.github.io` main (`412ea2f`).
 
 - **Full detail in gotcha #29 above.** Short version: the user found a real
   deny-bypass bug in Antigravity (denying a tool call didn't actually block it),

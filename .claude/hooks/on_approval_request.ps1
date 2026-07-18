@@ -136,6 +136,7 @@ $body = @{
     timestamp    = (Get-Date -Format "o")
     tool_name    = $toolName
     command_name = $cmdName
+    cwd          = if ($inputData.cwd) { $inputData.cwd } else { "" }
 } | ConvertTo-Json -Compress
 
 Log "Posting event to API with session $sessionId ..."

@@ -13,6 +13,7 @@ using System.Security.Cryptography.X509Certificates;
 using System.Security.AccessControl;
 using System.Security.Principal;
 using System.Linq;
+using System.Text.RegularExpressions;
 using QRCoder;
 
 // Force AutoFlush on stdout and tee all Console.WriteLine calls to a log file.
@@ -294,6 +295,108 @@ var OpenCodeProjectSessions = new ConcurrentDictionary<string, string>(StringCom
 // of always trusting whichever one LastKnownCwd currently points at.
 var KnownProjects = new ConcurrentDictionary<string, DateTime>(StringComparer.OrdinalIgnoreCase);
 
+// Short-TTL cache for /hook/git-status so a project's branch/diff-stat isn't re-shelled
+// via `git` on every single poll (the Sessions list may call this once per visible row).
+var GitStatusCache = new ConcurrentDictionary<string, (GitStatusInfo Info, DateTime FetchedAt)>(StringComparer.OrdinalIgnoreCase);
+
+// See SessionSettings' own doc comment - keyed by AgentSettingsKey(cwd, agent), not cwd
+// alone.
+var ProjectAgentSettings = new ConcurrentDictionary<string, SessionSettings>(StringComparer.OrdinalIgnoreCase);
+static string AgentSettingsKey(string cwd, string agent) => $"{cwd}|{agent}";
+
+// Worktree path per (project, agent) - same key shape as ProjectAgentSettings, since a
+// worktree is scoped to one agent's sessions in one project, not shared across agents
+// (each agent gets its own isolated worktree so running Claude and Codex with worktrees
+// enabled in the same project never has them collide on the same checkout).
+var ProjectWorktrees = new ConcurrentDictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+
+// Creates (or reuses) a git worktree for one (project, agent) pair, identically for all
+// three agents - only Claude has a native -w/--worktree flag (live-tested this session
+// to genuinely work), but Codex/OpenCode have nothing equivalent, so AethelHook manages
+// the worktree itself the same way for all three rather than having two different code
+// paths with different reliability guarantees. Idempotent: a second call for the same
+// (project, agent) just returns the already-created path instead of erroring or
+// recreating it.
+async Task<(bool Ok, string? Path, string? Error)> EnsureWorktreeAsync(string projectDir, string agent)
+{
+    var key = AgentSettingsKey(projectDir, agent);
+    if (ProjectWorktrees.TryGetValue(key, out var existingPath) && Directory.Exists(existingPath))
+        return (true, existingPath, null);
+
+    var worktreesRoot = @"C:\ProgramData\AethelHook\worktrees";
+    Directory.CreateDirectory(worktreesRoot);
+    var slug = $"{agent}-{Math.Abs(projectDir.ToLowerInvariant().GetHashCode()):x}";
+    var worktreePath = Path.Combine(worktreesRoot, slug);
+    var branchName = $"aethelhook-{slug}";
+
+    if (Directory.Exists(worktreePath))
+    {
+        // Already exists on disk (e.g. state was lost/not yet saved from a prior
+        // success) - just re-register it rather than trying to recreate it.
+        ProjectWorktrees[key] = worktreePath;
+        KnownProjects[worktreePath] = DateTime.UtcNow;
+        _ = Task.Run(SaveProjectState);
+        return (true, worktreePath, null);
+    }
+
+    var psi = new ProcessStartInfo
+    {
+        FileName               = "git",
+        WorkingDirectory       = projectDir,
+        RedirectStandardOutput = true,
+        RedirectStandardError  = true,
+        UseShellExecute        = false,
+        CreateNoWindow         = true,
+        StandardOutputEncoding = Encoding.UTF8
+    };
+    psi.ArgumentList.Add("worktree");
+    psi.ArgumentList.Add("add");
+    psi.ArgumentList.Add(worktreePath);
+    psi.ArgumentList.Add("-b");
+    psi.ArgumentList.Add(branchName);
+
+    // Same LocalSystem-vs-real-user fix as /hook/git-status's RunGitAsync (gotchas
+    // #1/#2) - without this, git can't see the real user's .gitconfig safe.directory
+    // entries and refuses to operate on a repo it doesn't recognize as safe.
+    var profileDir = FindRealUserProfileDir();
+    if (!string.IsNullOrEmpty(profileDir))
+    {
+        psi.EnvironmentVariables["USERPROFILE"] = profileDir;
+        psi.EnvironmentVariables["HOME"]        = profileDir;
+        psi.EnvironmentVariables["HOMEDRIVE"]   = Path.GetPathRoot(profileDir)?.TrimEnd('\\');
+        psi.EnvironmentVariables["HOMEPATH"]    = profileDir.Substring(Path.GetPathRoot(profileDir)?.TrimEnd('\\')?.Length ?? 0);
+    }
+
+    using var proc = Process.Start(psi);
+    if (proc == null) return (false, null, "Failed to start git process");
+
+    var stderrTask = proc.StandardError.ReadToEndAsync();
+    _ = proc.StandardOutput.ReadToEndAsync();
+    using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(15));
+    try
+    {
+        await proc.WaitForExitAsync(cts.Token);
+    }
+    catch (OperationCanceledException)
+    {
+        try { proc.Kill(entireProcessTree: true); } catch { }
+        return (false, null, "git worktree add timed out after 15s");
+    }
+
+    if (proc.ExitCode != 0)
+    {
+        var stderr = (await stderrTask).Trim();
+        Console.WriteLine($"[Worktree] git worktree add failed for {projectDir} ({agent}): {stderr}");
+        return (false, null, stderr.Length > 0 ? stderr : "git worktree add failed");
+    }
+
+    ProjectWorktrees[key] = worktreePath;
+    KnownProjects[worktreePath] = DateTime.UtcNow;
+    _ = Task.Run(SaveProjectState);
+    Console.WriteLine($"[Worktree] Created {worktreePath} (branch {branchName}) for {projectDir} ({agent})");
+    return (true, worktreePath, null);
+}
+
 // Serializes headless prompt runs so two phone-sent prompts never spawn concurrent
 // claude.exe processes in the same working directory.
 var PromptRunLock = new SemaphoreSlim(1, 1);
@@ -318,7 +421,12 @@ void SaveProjectState()
             projectSessions      = ProjectSessions.ToDictionary(kv => kv.Key, kv => kv.Value, StringComparer.OrdinalIgnoreCase),
             codexProjectSessions = CodexProjectSessions.ToDictionary(kv => kv.Key, kv => kv.Value, StringComparer.OrdinalIgnoreCase),
             openCodeProjectSessions = OpenCodeProjectSessions.ToDictionary(kv => kv.Key, kv => kv.Value, StringComparer.OrdinalIgnoreCase),
-            knownProjects        = KnownProjects.ToDictionary(kv => kv.Key, kv => kv.Value, StringComparer.OrdinalIgnoreCase)
+            knownProjects        = KnownProjects.ToDictionary(kv => kv.Key, kv => kv.Value, StringComparer.OrdinalIgnoreCase),
+            projectAgentSettings = ProjectAgentSettings.ToDictionary(
+                kv => kv.Key,
+                kv => new { model = kv.Value.Model, effort = kv.Value.Effort, permissionMode = kv.Value.PermissionMode },
+                StringComparer.OrdinalIgnoreCase),
+            projectWorktrees = ProjectWorktrees.ToDictionary(kv => kv.Key, kv => kv.Value, StringComparer.OrdinalIgnoreCase)
         };
         var json = JsonSerializer.Serialize(state);
         lock (ProjectStateSaveLock)
@@ -361,6 +469,21 @@ void LoadProjectState()
             foreach (var prop in kp.EnumerateObject())
                 if (prop.Value.TryGetDateTime(out var seen))
                     KnownProjects[prop.Name] = seen;
+
+        if (root.TryGetProperty("projectAgentSettings", out var pas) && pas.ValueKind == JsonValueKind.Object)
+            foreach (var prop in pas.EnumerateObject())
+            {
+                if (prop.Value.ValueKind != JsonValueKind.Object) continue;
+                string? model = prop.Value.TryGetProperty("model", out var m) && m.ValueKind == JsonValueKind.String ? m.GetString() : null;
+                string? effort = prop.Value.TryGetProperty("effort", out var e) && e.ValueKind == JsonValueKind.String ? e.GetString() : null;
+                string? permMode = prop.Value.TryGetProperty("permissionMode", out var pm) && pm.ValueKind == JsonValueKind.String ? pm.GetString() : null;
+                ProjectAgentSettings[prop.Name] = new SessionSettings(model, effort, permMode);
+            }
+
+        if (root.TryGetProperty("projectWorktrees", out var pwt) && pwt.ValueKind == JsonValueKind.Object)
+            foreach (var prop in pwt.EnumerateObject())
+                if (prop.Value.ValueKind == JsonValueKind.String)
+                    ProjectWorktrees[prop.Name] = prop.Value.GetString()!;
 
         Console.WriteLine($"[ProjectState] Restored {KnownProjects.Count} known project(s), {ProjectSessions.Count} Claude session(s), {CodexProjectSessions.Count} Codex thread(s), {OpenCodeProjectSessions.Count} OpenCode session(s) from disk");
     }
@@ -499,7 +622,8 @@ app.MapPost("/hook/event", async (HttpContext ctx, EventRequest request) =>
         tool_name    = request.ToolName ?? "",
         command_name = request.CommandName ?? "",
         respond_url  = $"{ApiBaseUrl}/hook/respond",
-        api_base_url = ApiBaseUrl
+        api_base_url = ApiBaseUrl,
+        cwd          = request.Cwd ?? ""
     });
 
     // Store payload so a phone that connects late can receive it on join
@@ -656,6 +780,130 @@ app.MapGet("/hook/known-projects", (HttpContext ctx) =>
 });
 
 // ─────────────────────────────────────────────────────────────────────────────
+// GET /hook/git-status  ─  phone requests branch + diff-stat for one project
+//                          directory, shown per-row in the Sessions list. Deliberately
+//                          a separate, per-directory, TTL-cached endpoint rather than
+//                          folded into /hook/known-projects - that list is polled on
+//                          every Sessions-tab entry for potentially every known project,
+//                          and shelling out to git for all of them on every poll would
+//                          turn a pure in-memory dictionary read into real per-poll I/O.
+//                          Cached ~10s per directory so a LazyColumn recomposing the
+//                          same visible rows doesn't keep re-shelling-out.
+// ─────────────────────────────────────────────────────────────────────────────
+app.MapGet("/hook/git-status", async (HttpContext ctx, string dir) =>
+{
+    if (!ValidateToken(ctx)) return Results.Unauthorized();
+    if (string.IsNullOrWhiteSpace(dir) || !Directory.Exists(dir))
+        return Results.BadRequest(new { error = "dir is required and must exist" });
+
+    var info = await GetGitStatusAsync(dir);
+    return Results.Ok(new
+    {
+        isGitRepo = info.IsGitRepo,
+        branch = info.Branch,
+        ahead = info.Ahead,
+        behind = info.Behind,
+        added = info.Added,
+        deleted = info.Deleted,
+        dirty = info.Dirty
+    });
+
+    async Task<GitStatusInfo> GetGitStatusAsync(string d)
+    {
+        if (GitStatusCache.TryGetValue(d, out var cached) && DateTime.UtcNow - cached.FetchedAt < TimeSpan.FromSeconds(10))
+            return cached.Info;
+
+        var info = await FetchGitStatusAsync(d);
+        GitStatusCache[d] = (info, DateTime.UtcNow);
+        return info;
+    }
+
+    async Task<GitStatusInfo> FetchGitStatusAsync(string d)
+    {
+        var (repoCheckRc, _) = await RunGitAsync(d, "rev-parse", "--is-inside-work-tree");
+        if (repoCheckRc != 0) return new GitStatusInfo(false, null, 0, 0, 0, 0, false);
+
+        string? branch = null;
+        int ahead = 0, behind = 0;
+        bool dirty = false;
+        var (statusRc, statusOut) = await RunGitAsync(d, "status", "--porcelain", "--branch");
+        if (statusRc == 0)
+        {
+            var lines = statusOut.Split('\n', StringSplitOptions.RemoveEmptyEntries);
+            if (lines.Length > 0 && lines[0].StartsWith("##"))
+            {
+                var header = lines[0].Substring(2).Trim();
+                branch = header.Split("...")[0].Split(' ')[0];
+                var aheadMatch = Regex.Match(header, @"ahead (\d+)");
+                var behindMatch = Regex.Match(header, @"behind (\d+)");
+                if (aheadMatch.Success) ahead = int.Parse(aheadMatch.Groups[1].Value);
+                if (behindMatch.Success) behind = int.Parse(behindMatch.Groups[1].Value);
+            }
+            dirty = lines.Length > 1;
+        }
+
+        int added = 0, deleted = 0;
+        var (diffRc, diffOut) = await RunGitAsync(d, "diff", "--shortstat", "HEAD");
+        if (diffRc == 0 && !string.IsNullOrWhiteSpace(diffOut))
+        {
+            var insMatch = Regex.Match(diffOut, @"(\d+) insertion");
+            var delMatch = Regex.Match(diffOut, @"(\d+) deletion");
+            if (insMatch.Success) added = int.Parse(insMatch.Groups[1].Value);
+            if (delMatch.Success) deleted = int.Parse(delMatch.Groups[1].Value);
+        }
+
+        return new GitStatusInfo(true, branch, ahead, behind, added, deleted, dirty);
+    }
+
+    async Task<(int ExitCode, string StdOut)> RunGitAsync(string d, params string[] args)
+    {
+        var psi = new ProcessStartInfo
+        {
+            FileName = "git",
+            WorkingDirectory = d,
+            RedirectStandardOutput = true,
+            RedirectStandardError = true,
+            UseShellExecute = false,
+            CreateNoWindow = true,
+            StandardOutputEncoding = Encoding.UTF8,
+        };
+        foreach (var a in args) psi.ArgumentList.Add(a);
+
+        // Same LocalSystem-vs-real-user fix as the headless CLI runners (gotchas #1/#2):
+        // without this, git reads SYSTEM's own (nonexistent) .gitconfig instead of the
+        // real user's, misses their `safe.directory` entries, and refuses to operate on
+        // a repo it doesn't recognize as safe - confirmed live, `rev-parse
+        // --is-inside-work-tree` silently returned nonzero against this very repo until
+        // this was added.
+        var profileDir = FindRealUserProfileDir();
+        if (!string.IsNullOrEmpty(profileDir))
+        {
+            psi.EnvironmentVariables["USERPROFILE"] = profileDir;
+            psi.EnvironmentVariables["HOME"]        = profileDir;
+            psi.EnvironmentVariables["HOMEDRIVE"]   = Path.GetPathRoot(profileDir)?.TrimEnd('\\');
+            psi.EnvironmentVariables["HOMEPATH"]    = profileDir.Substring(Path.GetPathRoot(profileDir)?.TrimEnd('\\')?.Length ?? 0);
+        }
+
+        using var proc = Process.Start(psi);
+        if (proc == null) return (-1, "");
+
+        var stdoutTask = proc.StandardOutput.ReadToEndAsync();
+        _ = proc.StandardError.ReadToEndAsync();
+        using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(2));
+        try
+        {
+            await proc.WaitForExitAsync(cts.Token);
+        }
+        catch (OperationCanceledException)
+        {
+            try { proc.Kill(entireProcessTree: true); } catch { }
+            return (-1, "");
+        }
+        return (proc.ExitCode, await stdoutTask);
+    }
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
 // POST /hook/send-prompt  ─  phone → PC (Phase 2: Session Access). Runs the
 //                            prompt as a HEADLESS `claude -p` process - NOT
 //                            injected into the live interactive session. This
@@ -671,7 +919,7 @@ app.MapGet("/hook/known-projects", (HttpContext ctx) =>
 //                            perspective; progress/result arrive independently
 //                            via /hook/session-update broadcasts.
 // ─────────────────────────────────────────────────────────────────────────────
-app.MapPost("/hook/send-prompt", (HttpContext ctx, SendPromptRequest request) =>
+app.MapPost("/hook/send-prompt", async (HttpContext ctx, SendPromptRequest request) =>
 {
     if (!ValidateToken(ctx)) return Results.Unauthorized();
     if (string.IsNullOrWhiteSpace(request.Prompt))
@@ -699,6 +947,25 @@ app.MapPost("/hook/send-prompt", (HttpContext ctx, SendPromptRequest request) =>
 
     var useCodex = string.Equals(request.Agent, "codex", StringComparison.OrdinalIgnoreCase);
     var useOpenCode = string.Equals(request.Agent, "opencode", StringComparison.OrdinalIgnoreCase);
+    var agentForSettings = useCodex ? "codex" : useOpenCode ? "opencode" : "claude";
+
+    // Worktree isolation, identical mechanism for all 3 agents (see EnsureWorktreeAsync's
+    // own doc comment). The resumable-session dictionaries (ProjectSessions/
+    // CodexProjectSessions/OpenCodeProjectSessions) are keyed by whichever directory
+    // actually gets passed to the CLI - so toggling this on/off switches between two
+    // genuinely independent conversation threads for the same project, not just a cwd
+    // cosmetic change.
+    var effectiveWorkDir = cwd;
+    if (request.UseWorktree == true)
+    {
+        var (wtOk, wtPath, wtError) = await EnsureWorktreeAsync(cwd, agentForSettings);
+        if (!wtOk)
+        {
+            Console.WriteLine($"[SendPrompt] Worktree setup failed for {cwd} ({agentForSettings}): {wtError}");
+            return Results.Problem($"Failed to create git worktree: {wtError}");
+        }
+        effectiveWorkDir = wtPath!;
+    }
 
     if (useCodex)
     {
@@ -708,8 +975,13 @@ app.MapPost("/hook/send-prompt", (HttpContext ctx, SendPromptRequest request) =>
             Console.WriteLine("[SendPrompt] codex.exe not found - cannot run headless prompt");
             return Results.Problem("Codex CLI not found on this machine.");
         }
-        _ = Task.Run(() => RunHeadlessCodexPromptAsync(codexPath, codexProfile, cwd, request.Prompt));
-        Console.WriteLine($"[SendPrompt] Queued headless Codex run in {cwd}");
+        if (request.Model != null || request.Effort != null)
+        {
+            ProjectAgentSettings[AgentSettingsKey(cwd, "codex")] = new SessionSettings(request.Model, request.Effort, null);
+            _ = Task.Run(SaveProjectState);
+        }
+        _ = Task.Run(() => RunHeadlessCodexPromptAsync(codexPath, codexProfile, effectiveWorkDir, request.Prompt, request.Model, request.Effort));
+        Console.WriteLine($"[SendPrompt] Queued headless Codex run in {effectiveWorkDir}");
         return Results.Ok(new { success = true, queued = true });
     }
 
@@ -721,8 +993,13 @@ app.MapPost("/hook/send-prompt", (HttpContext ctx, SendPromptRequest request) =>
             Console.WriteLine("[SendPrompt] opencode.exe not found - cannot run headless prompt");
             return Results.Problem("OpenCode CLI not found on this machine.");
         }
-        _ = Task.Run(() => RunHeadlessOpenCodePromptAsync(openCodePath, openCodeProfile, cwd, request.Prompt));
-        Console.WriteLine($"[SendPrompt] Queued headless OpenCode run in {cwd}");
+        if (request.Model != null || request.Effort != null)
+        {
+            ProjectAgentSettings[AgentSettingsKey(cwd, "opencode")] = new SessionSettings(request.Model, request.Effort, null);
+            _ = Task.Run(SaveProjectState);
+        }
+        _ = Task.Run(() => RunHeadlessOpenCodePromptAsync(openCodePath, openCodeProfile, effectiveWorkDir, request.Prompt, request.Model, request.Effort));
+        Console.WriteLine($"[SendPrompt] Queued headless OpenCode run in {effectiveWorkDir}");
         return Results.Ok(new { success = true, queued = true });
     }
 
@@ -733,11 +1010,21 @@ app.MapPost("/hook/send-prompt", (HttpContext ctx, SendPromptRequest request) =>
         return Results.Problem("Claude Code CLI not found on this machine.");
     }
 
-    _ = Task.Run(() => RunHeadlessPromptAsync(cliPath, userProfile, cwd, request.Prompt));
-    Console.WriteLine($"[SendPrompt] Queued headless run in {cwd}");
+    // The phone resends its settings sheet's current model/effort/permission-mode on
+    // every send-prompt call (no separate save-settings endpoint) - persist whichever
+    // of these were actually provided, keyed per (project, agent) like the resumable
+    // session ids above, so a phone reopening the sheet later sees the last-used values.
+    if (request.Model != null || request.Effort != null || request.PermissionMode != null)
+    {
+        ProjectAgentSettings[AgentSettingsKey(cwd, "claude")] = new SessionSettings(request.Model, request.Effort, request.PermissionMode);
+        _ = Task.Run(SaveProjectState);
+    }
+
+    _ = Task.Run(() => RunHeadlessPromptAsync(cliPath, userProfile, effectiveWorkDir, request.Prompt, request.Model, request.Effort, request.PermissionMode));
+    Console.WriteLine($"[SendPrompt] Queued headless run in {effectiveWorkDir}");
     return Results.Ok(new { success = true, queued = true });
 
-    async Task RunHeadlessPromptAsync(string exePath, string? profileDir, string workDir, string prompt)
+    async Task RunHeadlessPromptAsync(string exePath, string? profileDir, string workDir, string prompt, string? model, string? effort, string? permissionMode)
     {
         await PromptRunLock.WaitAsync();
         try
@@ -758,6 +1045,26 @@ app.MapPost("/hook/send-prompt", (HttpContext ctx, SendPromptRequest request) =>
             psi.ArgumentList.Add("--output-format");
             psi.ArgumentList.Add("stream-json");
             psi.ArgumentList.Add("--verbose");
+
+            // Model/effort/permission-mode - all confirmed real flags on this CLI
+            // (`claude --help`), live-tested this session including that
+            // --permission-mode doesn't disable AethelHook's own PreToolUse hook for
+            // any of its 6 values (hook still fires and is honored in every case).
+            if (!string.IsNullOrEmpty(model))
+            {
+                psi.ArgumentList.Add("--model");
+                psi.ArgumentList.Add(model);
+            }
+            if (!string.IsNullOrEmpty(effort))
+            {
+                psi.ArgumentList.Add("--effort");
+                psi.ArgumentList.Add(effort);
+            }
+            if (!string.IsNullOrEmpty(permissionMode))
+            {
+                psi.ArgumentList.Add("--permission-mode");
+                psi.ArgumentList.Add(permissionMode);
+            }
 
             // Continue this DIRECTORY's conversation across phone-sent prompts instead
             // of a fresh amnesiac session every time - confirmed live that --resume
@@ -889,7 +1196,7 @@ app.MapPost("/hook/send-prompt", (HttpContext ctx, SendPromptRequest request) =>
     // --dangerously-bypass-hook-trust is passed - both would either bypass the phone
     // gate entirely or aren't needed since hook trust is already established from this
     // user's prior interactive Codex use.
-    async Task RunHeadlessCodexPromptAsync(string exePath, string? profileDir, string workDir, string prompt)
+    async Task RunHeadlessCodexPromptAsync(string exePath, string? profileDir, string workDir, string prompt, string? model = null, string? effort = null)
     {
         await PromptRunLock.WaitAsync();
         try
@@ -929,6 +1236,28 @@ app.MapPost("/hook/send-prompt", (HttpContext ctx, SendPromptRequest request) =>
                 psi.ArgumentList.Add("approval_policy=\"never\"");
             }
 
+            // Model/effort - live-verified this session against the real model (not
+            // just docs): Codex's own reasoning-effort ceiling is "xhigh", confirmed via
+            // the model's own rejection error listing valid values as
+            // none/low/medium/high/xhigh. "minimal" is rejected outright (a real
+            // unsupported_value API error); "max" isn't in that list either but doesn't
+            // error - it silently no-ops - so Claude's canonical "max" is mapped down to
+            // Codex's real ceiling "xhigh" here rather than silently doing nothing.
+            void AddModelAndEffortOverrides()
+            {
+                if (!string.IsNullOrEmpty(model))
+                {
+                    psi.ArgumentList.Add("-m");
+                    psi.ArgumentList.Add(model);
+                }
+                if (!string.IsNullOrEmpty(effort))
+                {
+                    var mappedEffort = effort == "max" ? "xhigh" : effort;
+                    psi.ArgumentList.Add("-c");
+                    psi.ArgumentList.Add($"model_reasoning_effort=\"{mappedEffort}\"");
+                }
+            }
+
             psi.ArgumentList.Add("exec");
             if (!string.IsNullOrEmpty(resumeId))
             {
@@ -937,6 +1266,7 @@ app.MapPost("/hook/send-prompt", (HttpContext ctx, SendPromptRequest request) =>
                 // and `exec resume` has no --cd flag at all (confirmed via --help).
                 psi.ArgumentList.Add("resume");
                 AddSandboxOverrides();
+                AddModelAndEffortOverrides();
                 psi.ArgumentList.Add("--json");
                 psi.ArgumentList.Add("--skip-git-repo-check");
                 psi.ArgumentList.Add(resumeId);
@@ -944,6 +1274,7 @@ app.MapPost("/hook/send-prompt", (HttpContext ctx, SendPromptRequest request) =>
             else
             {
                 AddSandboxOverrides();
+                AddModelAndEffortOverrides();
                 psi.ArgumentList.Add("--json");
                 // AethelHook itself isn't a git repo, and there's no guarantee an
                 // arbitrary project directory is either - always allow non-repo dirs.
@@ -1078,7 +1409,7 @@ app.MapPost("/hook/send-prompt", (HttpContext ctx, SendPromptRequest request) =>
     // Live-verified this is safe for resume: killing right after "stop" still leaves a
     // fully resumable session - a follow-up `--session <id>` run correctly recalled
     // detail from the killed run's conversation.
-    async Task RunHeadlessOpenCodePromptAsync(string exePath, string? profileDir, string workDir, string prompt)
+    async Task RunHeadlessOpenCodePromptAsync(string exePath, string? profileDir, string workDir, string prompt, string? model = null, string? effort = null)
     {
         await PromptRunLock.WaitAsync();
         try
@@ -1109,6 +1440,19 @@ app.MapPost("/hook/send-prompt", (HttpContext ctx, SendPromptRequest request) =>
             {
                 psi.ArgumentList.Add("--session");
                 psi.ArgumentList.Add(resumeId);
+            }
+            if (!string.IsNullOrEmpty(model))
+            {
+                psi.ArgumentList.Add("-m");
+                psi.ArgumentList.Add(model);
+            }
+            if (!string.IsNullOrEmpty(effort))
+            {
+                // Unlike Codex, live-verified this session that OpenCode's --variant
+                // accepts the full canonical vocabulary (low/medium/high/xhigh/max)
+                // without rejecting any of them - no mapping needed.
+                psi.ArgumentList.Add("--variant");
+                psi.ArgumentList.Add(effort);
             }
             psi.ArgumentList.Add(prompt);
 
@@ -1295,7 +1639,8 @@ app.MapPost("/hook/ask-question", async (HttpContext ctx, AskQuestionRequest req
         type       = "ask_question",
         session_id = request.SessionId,
         questions  = request.Questions,
-        answer_url = answerUrl
+        answer_url = answerUrl,
+        cwd        = request.Cwd ?? ""
     });
 
     // Store payload so a phone that connects late can receive it on join
@@ -1437,7 +1782,8 @@ app.MapPost("/hook/plan-request", async (HttpContext ctx, PlanRequest request) =
         respond_url  = respondUrl,
         plan_url     = planUrl,
         respond_urls = respondUrls,
-        plan_urls    = planUrls
+        plan_urls    = planUrls,
+        cwd          = request.Cwd ?? ""
     });
 
     bool wsSent = false;
@@ -1788,6 +2134,19 @@ static string LoadOrCreateApiToken()
 #pragma warning disable CA1416 // this app only ever runs on Windows (LocalSystem service)
 static SecurityIdentifier? FindRealUserSid()
 {
+    var targetDir = FindRealUserProfileDir();
+    return targetDir != null ? FindSidForProfileDir(targetDir) : null;
+}
+
+// Extracted out of FindRealUserSid so any LocalSystem-spawned process that needs the
+// real user's profile dir (not just for SID/ACL purposes) can reuse the same scan -
+// e.g. `git`, which needs HOME pointed at the real profile so it reads that user's
+// .gitconfig (safe.directory entries live there, not in a system-wide config; without
+// this a git process spawned by the SYSTEM-run service refuses to touch a repo it
+// doesn't recognize as safe, exactly like gotchas #1/#2's env-var-override fix for
+// claude/codex/opencode).
+static string? FindRealUserProfileDir()
+{
     var usersRoot = @"C:\Users";
     if (!Directory.Exists(usersRoot)) return null;
 
@@ -1812,8 +2171,7 @@ static SecurityIdentifier? FindRealUserSid()
         }
     }
 
-    var targetDir = preferredDir ?? fallbackDir;
-    return targetDir != null ? FindSidForProfileDir(targetDir) : null;
+    return preferredDir ?? fallbackDir;
 }
 
 // Resolves a profile directory to its owning SID via the registry's ProfileList, not
@@ -3104,7 +3462,8 @@ public record EventRequest(
     [property: JsonPropertyName("timestamp")]     string Timestamp,
     [property: JsonPropertyName("command_name")]  string? CommandName,
     [property: JsonPropertyName("tool_name")]     string? ToolName,
-    [property: JsonPropertyName("codex_turn_id")] string? CodexTurnId
+    [property: JsonPropertyName("codex_turn_id")] string? CodexTurnId,
+    [property: JsonPropertyName("cwd")]           string? Cwd
 );
 
 public record RespondRequest(
@@ -3123,7 +3482,8 @@ public record NotifyRequest(
 // needs to understand AskUserQuestion's schema, just pass it through unmodified.
 public record AskQuestionRequest(
     [property: JsonPropertyName("session_id")] string SessionId,
-    [property: JsonPropertyName("questions")]  JsonElement Questions
+    [property: JsonPropertyName("questions")]  JsonElement Questions,
+    [property: JsonPropertyName("cwd")]        string? Cwd
 );
 public record AnswerQuestionRequest(
     [property: JsonPropertyName("session_id")] string SessionId,
@@ -3132,7 +3492,8 @@ public record AnswerQuestionRequest(
 
 public record PlanRequest(
     [property: JsonPropertyName("session_id")] string SessionId,
-    [property: JsonPropertyName("plan")]       string Plan
+    [property: JsonPropertyName("plan")]       string Plan,
+    [property: JsonPropertyName("cwd")]        string? Cwd
 );
 
 public record PlanDecisionRequest(
@@ -3151,5 +3512,18 @@ public record SessionUpdateRequest(
 public record SendPromptRequest(
     [property: JsonPropertyName("prompt")] string Prompt,
     [property: JsonPropertyName("project_dir")] string? ProjectDir,
-    [property: JsonPropertyName("agent")] string? Agent
+    [property: JsonPropertyName("agent")] string? Agent,
+    [property: JsonPropertyName("model")] string? Model,
+    [property: JsonPropertyName("effort")] string? Effort,
+    [property: JsonPropertyName("permission_mode")] string? PermissionMode,
+    [property: JsonPropertyName("use_worktree")] bool? UseWorktree
 );
+
+public record GitStatusInfo(bool IsGitRepo, string? Branch, int Ahead, int Behind, int Added, int Deleted, bool Dirty);
+
+// Per (project directory, agent) settings the phone last chose for a headless session -
+// keyed by "{cwd}|{agent}" (not just cwd), since each agent has its own vocabulary
+// (Claude's --effort levels vs Codex's model_reasoning_effort vs OpenCode's --variant)
+// and already gets its own resumable session per project - settings follow the same
+// per-agent scoping as ProjectSessions/CodexProjectSessions/OpenCodeProjectSessions.
+public record SessionSettings(string? Model, string? Effort, string? PermissionMode);
