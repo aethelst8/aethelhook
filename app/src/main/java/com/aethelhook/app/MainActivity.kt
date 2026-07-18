@@ -6,6 +6,10 @@ import android.content.Intent
 import android.content.pm.PackageManager
 import android.os.Build
 import android.os.Bundle
+import android.os.Handler
+import android.os.Looper
+import android.speech.tts.TextToSpeech
+import android.speech.tts.UtteranceProgressListener
 import android.util.Log
 import androidx.activity.compose.setContent
 import androidx.activity.compose.rememberLauncherForActivityResult
@@ -1120,7 +1124,7 @@ fun SettingsScreen(ctx: Context, isDark: Boolean, onToggleTheme: () -> Unit) {
                     Spacer(Modifier.width(8.dp))
                     Text("About", fontWeight = FontWeight.SemiBold, fontSize = 15.sp, color = c.textPrimary)
                 }
-                InfoRow("App", "ÆthelHook v1.0")
+                InfoRow("App", "ÆthelHook v${BuildConfig.VERSION_NAME}")
                 Text(
                     text = "Copyright © 2026 ÆthelSt8\nAll rights reserved",
                     color = c.textSecondary,
@@ -1473,6 +1477,85 @@ private fun MdBody(text: String) {
 fun SummaryPopup(title: String, body: String, onDismiss: () -> Unit) {
     val c = LocalAethelColors.current
     val screenHeightDp = LocalConfiguration.current.screenHeightDp
+    val ctx = LocalContext.current
+
+    // Read-aloud via Android's built-in TTS engine (no extra dependency needed). Scoped
+    // to this popup's own lifecycle via DisposableEffect - created once when the popup
+    // appears, torn down when it's dismissed, so it never leaks a bound TTS engine past
+    // the dialog's lifetime.
+    //
+    // Android's TextToSpeech has no native pause/resume - only stop(), which drops
+    // everything queued. To make "pause" actually resume near where it left off
+    // instead of restarting the whole summary, the text is split into sentence-sized
+    // chunks and spoken one utterance per chunk; the utteranceId encodes the chunk
+    // index, so onStart tells us which chunk was actually playing when stop() was
+    // called. Resuming re-queues from that same chunk instead of chunk 0. This is
+    // chunk-granularity pause, not sample-accurate - the standard workaround given the
+    // platform TTS API, and a large improvement over restarting from scratch.
+    var ttsReady by remember { mutableStateOf(false) }
+    var isSpeaking by remember { mutableStateOf(false) }
+    var currentChunk by remember { mutableStateOf(0) }
+    val ttsRef = remember { arrayOfNulls<TextToSpeech>(1) }
+    val mainHandler = remember { Handler(Looper.getMainLooper()) }
+    val chunks = remember(title, body) {
+        "$title. $body".split(Regex("(?<=[.!?])\\s+")).filter { it.isNotBlank() }
+    }
+
+    DisposableEffect(Unit) {
+        val engine = TextToSpeech(ctx) { status -> ttsReady = status == TextToSpeech.SUCCESS }
+        engine.setOnUtteranceProgressListener(object : UtteranceProgressListener() {
+            // These callbacks land on the TTS service's own binder thread, not the main
+            // thread - post back to main before touching Compose state.
+            override fun onStart(utteranceId: String?) {
+                val idx = utteranceId?.removePrefix("chunk_")?.toIntOrNull() ?: return
+                mainHandler.post { currentChunk = idx; isSpeaking = true }
+            }
+            override fun onDone(utteranceId: String?) {
+                val idx = utteranceId?.removePrefix("chunk_")?.toIntOrNull() ?: return
+                if (idx == chunks.lastIndex) mainHandler.post { isSpeaking = false; currentChunk = 0 }
+            }
+            @Deprecated("Deprecated in Java")
+            override fun onError(utteranceId: String?) { mainHandler.post { isSpeaking = false } }
+        })
+        ttsRef[0] = engine
+        onDispose {
+            engine.stop()
+            engine.shutdown()
+        }
+    }
+
+    // Once the engine is ready, switch off whatever voice it defaulted to (often the
+    // older, more robotic one) and pick the highest-QUALITY_* voice actually installed
+    // for the same locale - the engine's installed voice set varies by device/OS
+    // version, so this is queried live rather than hardcoding a voice name. Skips any
+    // voice flagged KEY_FEATURE_NOT_INSTALLED (listed as available but not actually
+    // downloaded on this device - selecting one of those would silently fail or fall
+    // back anyway).
+    LaunchedEffect(ttsReady) {
+        if (!ttsReady) return@LaunchedEffect
+        val engine = ttsRef[0] ?: return@LaunchedEffect
+        val targetLocale = engine.defaultVoice?.locale ?: Locale.getDefault()
+        val bestVoice = engine.voices
+            ?.filter { it.locale == targetLocale && !it.features.contains(TextToSpeech.Engine.KEY_FEATURE_NOT_INSTALLED) }
+            ?.maxByOrNull { it.quality }
+        if (bestVoice != null) engine.voice = bestVoice
+    }
+
+    fun toggleReadAloud() {
+        val engine = ttsRef[0] ?: return
+        if (isSpeaking) {
+            // Pause: stop() clears the whole queue, but currentChunk already holds
+            // whichever chunk's onStart last fired - i.e. the one actually playing -
+            // so resuming re-queues from there instead of restarting at chunk 0.
+            engine.stop()
+            isSpeaking = false
+        } else if (ttsReady && chunks.isNotEmpty()) {
+            for (i in currentChunk until chunks.size) {
+                val mode = if (i == currentChunk) TextToSpeech.QUEUE_FLUSH else TextToSpeech.QUEUE_ADD
+                engine.speak(chunks[i], mode, null, "chunk_$i")
+            }
+        }
+    }
 
     Dialog(
         onDismissRequest = onDismiss,
@@ -1554,6 +1637,22 @@ fun SummaryPopup(title: String, body: String, onDismiss: () -> Unit) {
                                 Text(title, fontWeight = FontWeight.Bold, fontSize = 18.sp, color = c.accentCyan)
                                 Text("Agent Summary", color = c.textMuted, fontSize = 11.sp)
                             }
+                            Box(
+                                modifier = Modifier
+                                    .size(28.dp)
+                                    .clip(CircleShape)
+                                    .background(if (isSpeaking) c.accentCyan.copy(alpha = 0.18f) else c.textMuted.copy(alpha = 0.10f))
+                                    .clickable { toggleReadAloud() },
+                                contentAlignment = Alignment.Center
+                            ) {
+                                Icon(
+                                    if (isSpeaking) Icons.Default.Pause else Icons.Default.PlayArrow,
+                                    contentDescription = if (isSpeaking) "Pause reading aloud" else if (currentChunk > 0) "Resume reading aloud" else "Read summary aloud",
+                                    tint = if (isSpeaking) c.accentCyan else c.textSecondary,
+                                    modifier = Modifier.size(16.dp)
+                                )
+                            }
+                            Spacer(Modifier.width(8.dp))
                             Box(
                                 modifier = Modifier
                                     .size(28.dp)

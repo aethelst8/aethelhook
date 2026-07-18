@@ -126,6 +126,7 @@ $body = @{
     tool_name     = $toolName
     command_name  = $cmdName
     codex_turn_id = $codexTurnId
+    cwd           = if ($inputData.cwd) { $inputData.cwd } else { "" }
 } | ConvertTo-Json -Compress
 
 Log "Posting event to API with session $sessionId ..."

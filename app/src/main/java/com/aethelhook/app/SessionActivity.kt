@@ -1,6 +1,7 @@
 package com.aethelhook.app
 
 import android.content.Context
+import android.content.Intent
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
@@ -17,6 +18,7 @@ import androidx.compose.material.icons.automirrored.filled.KeyboardArrowRight
 import androidx.compose.material.icons.filled.FolderOpen
 import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.SmartToy
+import androidx.compose.material.icons.filled.Tune
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.runtime.snapshots.SnapshotStateList
@@ -59,14 +61,44 @@ import java.util.Locale
 // one to open its chat (WhatsApp-conversation-list-style), with a back arrow to
 // return to the list.
 
+// Carries whatever an approval/question/plan-review actionable event needs to either
+// render inline chips or deep-link into the existing full-screen Activity. `answered` is
+// a Compose MutableState (not a plain val) so tapping a chip - or an "ack" arriving from
+// ANY surface (notification quick-action, full-screen Activity, or this chip) - can flip
+// it in place without needing to replace the ChatItem inside SessionChatStore's list.
+private class PendingAction(
+    val type: String,
+    val sessionId: String,
+    val toolName: String = "",
+    val preview: String = "",
+    val respondUrl: String = "",
+    val answerUrl: String = "",
+    val questionsJson: String = "",
+    val planText: String = "",
+    val planPreview: String = "",
+    val planUrl: String = "",
+    val planUrls: String = "",
+    val respondUrls: String = "",
+    val answered: MutableState<String?> = mutableStateOf(null)
+)
+
 private data class ChatItem(
     val text: String,
     val timestamp: Long,
     val isUser: Boolean,
-    val label: String = ""
+    val label: String = "",
+    val action: PendingAction? = null
 )
 
 private data class ProjectInfo(val path: String, val label: String)
+
+private data class GitStatus(
+    val isGitRepo: Boolean,
+    val branch: String?,
+    val added: Int,
+    val deleted: Int,
+    val dirty: Boolean
+)
 
 // on_tool_done.ps1 fires for EVERY tool call in EVERY Claude Code window (hooks are
 // global, per PreToolUse/PostToolUse/SessionStart), not just phone-initiated headless
@@ -100,6 +132,18 @@ private object SessionChatStore {
     fun setThinking(key: String, value: Boolean) {
         if (value) thinkingByProject[key] = true else thinkingByProject.remove(key)
     }
+
+    // An "ack" carries no cwd (see AethelHookWebSocket.handleMessage), so the pending
+    // action it resolves could be in any project's bucket - session ids are unique
+    // across the whole server, so a linear scan across the (small, personal-use-scale)
+    // set of known project buckets is cheap and safe.
+    fun markAnswered(sessionId: String, label: String) {
+        for (list in byProject.values) {
+            val item = list.firstOrNull { it.action?.sessionId == sessionId } ?: continue
+            item.action?.answered?.value = label
+            return
+        }
+    }
 }
 
 private fun agentLabel(agent: String, longForm: Boolean = false): String = when {
@@ -109,13 +153,20 @@ private fun agentLabel(agent: String, longForm: Boolean = false): String = when 
     else                                         -> "Claude"
 }
 
-private suspend fun sendPromptToApi(baseUrl: String, ctx: Context, prompt: String, projectDir: String?, agent: String): String = withContext(Dispatchers.IO) {
+private suspend fun sendPromptToApi(
+    baseUrl: String, ctx: Context, prompt: String, projectDir: String?, agent: String,
+    settings: ProjectAgentSettings = ProjectAgentSettings()
+): String = withContext(Dispatchers.IO) {
     val label = agentLabel(agent, longForm = true)
     try {
         val json    = JSONObject().apply {
             put("prompt", prompt)
             if (!projectDir.isNullOrBlank()) put("project_dir", projectDir)
             put("agent", agent)
+            settings.model?.let { put("model", it) }
+            settings.effort?.let { put("effort", it) }
+            settings.permissionMode?.let { put("permission_mode", it) }
+            if (settings.useWorktree) put("use_worktree", true)
         }.toString()
         val body    = json.toRequestBody("application/json; charset=utf-8".toMediaType())
         val request = Request.Builder().url("$baseUrl/hook/send-prompt").post(body).build()
@@ -146,6 +197,34 @@ private suspend fun fetchKnownProjects(baseUrl: String, ctx: Context): List<Proj
         }
     } catch (e: Exception) {
         emptyList()
+    }
+}
+
+// Phase 1 (Happy-Coder-parity work): branch + diff-stat shown per project row in the
+// Sessions list. A separate call per project rather than baked into
+// fetchKnownProjects/known-projects - that endpoint is a pure in-memory dictionary read
+// today and folding a git shell-out into it for every known project would add real
+// latency to every list refresh, so this is called once per visible card instead (see
+// ProjectHomeCard's LaunchedEffect below - LazyColumn only composes on-screen rows, so
+// this is naturally bounded to what's actually visible).
+private suspend fun fetchGitStatus(baseUrl: String, ctx: Context, dir: String): GitStatus? = withContext(Dispatchers.IO) {
+    try {
+        val url = "$baseUrl/hook/git-status?dir=${java.net.URLEncoder.encode(dir, "UTF-8")}"
+        val request  = Request.Builder().url(url).get().build()
+        val response = AethelHookWebSocket.newBoundHttpClient(ctx).newCall(request).execute()
+        response.use {
+            if (!it.isSuccessful) return@withContext null
+            val obj = JSONObject(it.body?.string().orEmpty())
+            GitStatus(
+                isGitRepo = obj.optBoolean("isGitRepo", false),
+                branch = obj.optString("branch").ifBlank { null },
+                added = obj.optInt("added", 0),
+                deleted = obj.optInt("deleted", 0),
+                dirty = obj.optBoolean("dirty", false)
+            )
+        }
+    } catch (e: Exception) {
+        null
     }
 }
 
@@ -240,7 +319,7 @@ private fun SessionsHomeScreen(ctx: Context, onSelectProject: (ProjectInfo) -> U
                 verticalArrangement = Arrangement.spacedBy(10.dp)
             ) {
                 items(projects) { proj ->
-                    ProjectHomeCard(proj = proj, onClick = { onSelectProject(proj) })
+                    ProjectHomeCard(ctx = ctx, proj = proj, onClick = { onSelectProject(proj) })
                 }
                 item { Spacer(Modifier.height(8.dp)) }
             }
@@ -249,9 +328,15 @@ private fun SessionsHomeScreen(ctx: Context, onSelectProject: (ProjectInfo) -> U
 }
 
 @Composable
-private fun ProjectHomeCard(proj: ProjectInfo, onClick: () -> Unit) {
+private fun ProjectHomeCard(ctx: Context, proj: ProjectInfo, onClick: () -> Unit) {
     val c = LocalAethelColors.current
     val shape = RoundedCornerShape(16.dp)
+    var gitStatus by remember(proj.path) { mutableStateOf<GitStatus?>(null) }
+
+    LaunchedEffect(proj.path) {
+        gitStatus = fetchGitStatus(AppPrefs.getApiUrl(ctx), ctx, proj.path)
+    }
+
     Row(
         modifier = Modifier
             .fillMaxWidth()
@@ -271,7 +356,19 @@ private fun ProjectHomeCard(proj: ProjectInfo, onClick: () -> Unit) {
         }
         Column(Modifier.weight(1f)) {
             Text(proj.label, color = c.textPrimary, fontSize = 15.sp, fontWeight = FontWeight.SemiBold)
-            Text(proj.path, color = c.textMuted, fontSize = 11.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
+            Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                Text(proj.path, color = c.textMuted, fontSize = 11.sp, maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.weight(1f, fill = false))
+                val status = gitStatus
+                if (status?.isGitRepo == true) {
+                    status.branch?.let {
+                        Text(it, color = c.accentPurple, fontSize = 10.sp, fontWeight = FontWeight.Medium, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                    }
+                    if (status.added > 0 || status.deleted > 0) {
+                        Text("+${status.added}", color = c.accentGreen, fontSize = 10.sp, fontWeight = FontWeight.Medium)
+                        Text("-${status.deleted}", color = c.accentRed, fontSize = 10.sp, fontWeight = FontWeight.Medium)
+                    }
+                }
+            }
         }
         Icon(Icons.AutoMirrored.Filled.KeyboardArrowRight, contentDescription = null, tint = c.textMuted, modifier = Modifier.size(18.dp))
     }
@@ -343,10 +440,107 @@ private fun SessionChatScreen(ctx: Context, project: ProjectInfo, onBack: () -> 
         AethelHookWebSocket.sessionUpdates.value = null
     }
 
+    // Approvals/questions/plan-reviews now also show as an inline actionable chat item,
+    // alongside (not instead of) the existing push notification - see actionableEvents'
+    // own doc comment in AethelHookWebSocket.kt. Same cwd-routing + consume-then-null
+    // pattern as the session_update effect above.
+    val actionable by AethelHookWebSocket.actionableEvents.collectAsState()
+    LaunchedEffect(actionable) {
+        val a = actionable ?: return@LaunchedEffect
+
+        when (a.optString("type")) {
+            "approval_request" -> {
+                val targetKey  = projectKey(a.optString("cwd").ifBlank { null })
+                val targetList = SessionChatStore.messagesFor(targetKey)
+                val toolName   = a.optString("tool_name").ifBlank { "tool" }
+                targetList.add(
+                    ChatItem(
+                        text      = a.optString("detail").ifBlank { "Approve this $toolName call?" },
+                        timestamp = System.currentTimeMillis(),
+                        isUser    = false,
+                        label     = "Approval needed",
+                        action    = PendingAction(
+                            type       = "approval_request",
+                            sessionId  = a.optString("session_id"),
+                            toolName   = toolName,
+                            preview    = a.optString("detail"),
+                            respondUrl = a.optString("respond_url")
+                        )
+                    )
+                )
+            }
+            "ask_question" -> {
+                val targetKey  = projectKey(a.optString("cwd").ifBlank { null })
+                val targetList = SessionChatStore.messagesFor(targetKey)
+                val questions  = a.optJSONArray("questions") ?: org.json.JSONArray()
+                val firstText  = questions.optJSONObject(0)?.optString("question").orEmpty()
+                targetList.add(
+                    ChatItem(
+                        text      = firstText.ifBlank { "Your PC has a question" },
+                        timestamp = System.currentTimeMillis(),
+                        isUser    = false,
+                        label     = "Question",
+                        action    = PendingAction(
+                            type          = "ask_question",
+                            sessionId     = a.optString("session_id"),
+                            answerUrl     = a.optString("answer_url"),
+                            questionsJson = questions.toString()
+                        )
+                    )
+                )
+            }
+            "plan_review" -> {
+                val targetKey  = projectKey(a.optString("cwd").ifBlank { null })
+                val targetList = SessionChatStore.messagesFor(targetKey)
+                targetList.add(
+                    ChatItem(
+                        text      = a.optString("plan_preview").ifBlank { "Review the proposed plan" },
+                        timestamp = System.currentTimeMillis(),
+                        isUser    = false,
+                        label     = "Plan review",
+                        action    = PendingAction(
+                            type        = "plan_review",
+                            sessionId   = a.optString("session_id"),
+                            respondUrl  = a.optString("respond_url"),
+                            planText    = a.optString("plan"),
+                            planPreview = a.optString("plan_preview"),
+                            planUrl     = a.optString("plan_url"),
+                            planUrls    = a.optJSONArray("plan_urls")?.toString().orEmpty(),
+                            respondUrls = a.optJSONArray("respond_urls")?.toString().orEmpty()
+                        )
+                    )
+                )
+            }
+            "ack" -> {
+                val sessionId = a.optString("session_id")
+                val label = when {
+                    a.has("decision") -> when (a.optString("decision")) {
+                        "allow", "allow_once"                         -> "Allowed"
+                        "always_allow_project", "always_allow_global" -> "Always allowed"
+                        else                                          -> "Denied"
+                    }
+                    else -> "Answered"
+                }
+                SessionChatStore.markAnswered(sessionId, label)
+            }
+        }
+        AethelHookWebSocket.actionableEvents.value = null
+    }
+
     LaunchedEffect(chat.size, thinking) {
         val lastIndex = chat.size - 1 + if (thinking) 1 else 0
         if (lastIndex >= 0) listState.animateScrollToItem(lastIndex)
     }
+
+    // Per (project, agent) model/effort/permission-mode - reloaded whenever the agent
+    // toggle is cycled, since each agent has its own settings scope (see
+    // ProjectAgentSettings' own doc comment). Only Claude has a real picker for now
+    // (Codex/OpenCode's model/effort mapping is a later phase, and neither has a native
+    // permission-mode concept at all - see SettingsSheet.kt).
+    var currentSettings by remember(selectedAgent, project.path) {
+        mutableStateOf(AppPrefs.getProjectAgentSettings(ctx, selectedKey, selectedAgent))
+    }
+    var showSettingsSheet by remember { mutableStateOf(false) }
 
     fun submit() {
         val text = prompt.trim()
@@ -357,7 +551,7 @@ private fun SessionChatScreen(ctx: Context, project: ProjectInfo, onBack: () -> 
         sendError = null
         SessionChatStore.setThinking(selectedKey, true)
         scope.launch {
-            val error = sendPromptToApi(AppPrefs.getApiUrl(ctx), ctx, text, project.path, selectedAgent)
+            val error = sendPromptToApi(AppPrefs.getApiUrl(ctx), ctx, text, project.path, selectedAgent, currentSettings)
             sending = false
             if (error.isNotEmpty()) {
                 sendError = error
@@ -408,6 +602,11 @@ private fun SessionChatScreen(ctx: Context, project: ProjectInfo, onBack: () -> 
                     color = c.textPrimary, fontSize = 11.sp, maxLines = 1
                 )
             }
+            // Model/effort settings, all 3 agents - permission-mode within the sheet is
+            // Claude-only (see SettingsSheet.kt).
+            IconButton(onClick = { showSettingsSheet = true }) {
+                Icon(Icons.Default.Tune, contentDescription = "Session settings", tint = c.textMuted, modifier = Modifier.size(18.dp))
+            }
         }
 
         // Chat timeline - fills all remaining space.
@@ -427,7 +626,7 @@ private fun SessionChatScreen(ctx: Context, project: ProjectInfo, onBack: () -> 
                     }
                 }
             }
-            items(chat) { item -> ChatBubble(item) }
+            items(chat) { item -> ChatBubble(ctx, item) }
             if (thinking) {
                 item { ThinkingBubble() }
             }
@@ -487,10 +686,22 @@ private fun SessionChatScreen(ctx: Context, project: ProjectInfo, onBack: () -> 
             }
         }
     }
+
+    if (showSettingsSheet) {
+        SettingsSheet(
+            agent = selectedAgent,
+            current = currentSettings,
+            onSave = { updated ->
+                currentSettings = updated
+                AppPrefs.setProjectAgentSettings(ctx, selectedKey, selectedAgent, updated)
+            },
+            onDismiss = { showSettingsSheet = false }
+        )
+    }
 }
 
 @Composable
-private fun ChatBubble(item: ChatItem) {
+private fun ChatBubble(ctx: Context, item: ChatItem) {
     val c = LocalAethelColors.current
     val timeText = remember(item.timestamp) {
         SimpleDateFormat("HH:mm", Locale.getDefault()).format(Date(item.timestamp))
@@ -519,11 +730,115 @@ private fun ChatBubble(item: ChatItem) {
                 Spacer(Modifier.height(2.dp))
             }
             Text(item.text, color = c.textPrimary, fontSize = 14.sp, lineHeight = 19.sp)
+            item.action?.let { action ->
+                Spacer(Modifier.height(6.dp))
+                val answered = action.answered.value
+                if (answered != null) {
+                    Text("You: $answered", color = c.textMuted, fontSize = 11.sp, fontWeight = FontWeight.Medium)
+                } else {
+                    ActionChips(ctx, action)
+                }
+            }
             Text(
                 timeText, color = c.textMuted, fontSize = 10.sp,
                 modifier = Modifier.align(Alignment.End).padding(top = 2.dp)
             )
         }
+    }
+}
+
+// Inline actionable chips for a pending approval/question/plan-review - the same
+// decision codepaths the full-screen Activities use (via DecisionActions), reached
+// directly for the simple cases (approve/deny, a single low-option-count question) and
+// via a deep-link Intent into the existing Activity for anything that needs more room
+// (many/multi-select question options, plan text + optional feedback).
+@Composable
+private fun ActionChips(ctx: Context, action: PendingAction) {
+    val c = LocalAethelColors.current
+    val scope = rememberCoroutineScope()
+
+    when (action.type) {
+        "approval_request" -> Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            ActionChip("Allow", c.accentGreen) {
+                action.answered.value = "Allowed"
+                scope.launch {
+                    DecisionActions.submitApprovalDecision(
+                        ctx, action.respondUrl, action.sessionId, action.toolName, action.preview, "allow_once"
+                    )
+                }
+            }
+            ActionChip("Deny", c.accentRed) {
+                action.answered.value = "Denied"
+                scope.launch {
+                    DecisionActions.submitApprovalDecision(
+                        ctx, action.respondUrl, action.sessionId, action.toolName, action.preview, "deny"
+                    )
+                }
+            }
+        }
+        "ask_question" -> {
+            val questions = remember(action.questionsJson) {
+                runCatching { org.json.JSONArray(action.questionsJson) }.getOrNull() ?: org.json.JSONArray()
+            }
+            val single = questions.length() == 1
+            val firstOptions = questions.optJSONObject(0)?.optJSONArray("options")
+            val singleSelect = questions.optJSONObject(0)?.optBoolean("multiSelect", false) == false
+            if (single && singleSelect && firstOptions != null && firstOptions.length() in 1..4) {
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    val questionText = questions.optJSONObject(0)?.optString("question").orEmpty()
+                    for (i in 0 until firstOptions.length()) {
+                        val label = firstOptions.optJSONObject(i)?.optString("label").orEmpty()
+                        if (label.isBlank()) continue
+                        ActionChip(label, c.accentCyan) {
+                            action.answered.value = label
+                            scope.launch {
+                                val answers = JSONObject().apply { put(questionText, label) }
+                                DecisionActions.submitQuestionAnswer(ctx, action.answerUrl, action.sessionId, answers)
+                            }
+                        }
+                    }
+                }
+            } else {
+                ActionChip("Open to answer", c.accentCyan) {
+                    ctx.startActivity(
+                        Intent(ctx, QuestionActivity::class.java).apply {
+                            flags = Intent.FLAG_ACTIVITY_NEW_TASK
+                            putExtra("session_id", action.sessionId)
+                            putExtra("answer_url", action.answerUrl)
+                            putExtra("questions_json", action.questionsJson)
+                        }
+                    )
+                }
+            }
+        }
+        "plan_review" -> ActionChip("View plan & decide", c.accentCyan) {
+            ctx.startActivity(
+                Intent(ctx, PlanReviewActivity::class.java).apply {
+                    flags = Intent.FLAG_ACTIVITY_NEW_TASK
+                    putExtra("session_id", action.sessionId)
+                    putExtra("respond_url", action.respondUrl)
+                    putExtra("plan_url", action.planUrl)
+                    putExtra("plan_text", action.planText)
+                    putExtra("plan_preview", action.planPreview)
+                    putExtra("plan_urls", action.planUrls)
+                    putExtra("respond_urls", action.respondUrls)
+                }
+            )
+        }
+    }
+}
+
+@Composable
+private fun ActionChip(label: String, color: Color, onClick: () -> Unit) {
+    Box(
+        modifier = Modifier
+            .clip(RoundedCornerShape(50))
+            .background(color.copy(alpha = 0.16f))
+            .border(1.dp, color.copy(alpha = 0.5f), RoundedCornerShape(50))
+            .clickable(onClick = onClick)
+            .padding(horizontal = 12.dp, vertical = 6.dp)
+    ) {
+        Text(label, color = color, fontSize = 12.sp, fontWeight = FontWeight.SemiBold)
     }
 }
 

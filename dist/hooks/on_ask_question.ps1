@@ -56,6 +56,7 @@ try {
     $body = @{
         session_id = $sessionId
         questions  = $questions
+        cwd        = if ($inputData.cwd) { $inputData.cwd } else { "" }
     } | ConvertTo-Json -Depth 10 -Compress
 
     Log "Posting question(s) to API with session $sessionId ..."

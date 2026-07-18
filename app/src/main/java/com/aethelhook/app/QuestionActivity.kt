@@ -31,9 +31,6 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import org.json.JSONArray
 import org.json.JSONObject
-import java.io.OutputStreamWriter
-import java.net.HttpURLConnection
-import java.net.URL
 
 data class QOption(val label: String, val description: String)
 data class QuestionUi(val question: String, val header: String, val options: List<QOption>, val multiSelect: Boolean)
@@ -116,27 +113,7 @@ fun QuestionScreen(
             answers.put(q.question, states[i].toAnswerValue(q.multiSelect))
         }
         scope.launch(Dispatchers.IO) {
-            if (AethelHookWebSocket.isConnected) {
-                AethelHookWebSocket.sendQuestionAnswer(sessionId, answers)
-            } else {
-                try {
-                    val conn = URL(answerUrl).openConnection() as HttpURLConnection
-                    conn.pinnedFromPrefs(ctx)
-                    conn.requestMethod = "POST"
-                    conn.setRequestProperty("Content-Type", "application/json")
-                    conn.setRequestProperty("X-AethelHook-Token", AppPrefs.getApiToken(ctx))
-                    conn.doOutput = true
-                    conn.connectTimeout = 10_000
-                    conn.readTimeout    = 10_000
-                    val body = JSONObject().apply {
-                        put("session_id", sessionId)
-                        put("answers", answers)
-                    }
-                    OutputStreamWriter(conn.outputStream).use { it.write(body.toString()) }
-                    conn.responseCode
-                    conn.disconnect()
-                } catch (_: Exception) {}
-            }
+            DecisionActions.submitQuestionAnswer(ctx, answerUrl, sessionId, answers)
             onDone()
         }
     }
@@ -239,11 +216,12 @@ private fun QuestionCard(question: QuestionUi, state: QuestionAnswerState) {
                         selected    = state.selected.contains(opt.label),
                         multiSelect = question.multiSelect,
                         onClick     = {
-                            state.selected = if (question.multiSelect) {
-                                if (state.selected.contains(opt.label)) state.selected - opt.label
+                            if (question.multiSelect) {
+                                state.selected = if (state.selected.contains(opt.label)) state.selected - opt.label
                                 else state.selected + opt.label
                             } else {
-                                setOf(opt.label)
+                                state.selected = setOf(opt.label)
+                                state.otherSelected = false
                             }
                         }
                     )

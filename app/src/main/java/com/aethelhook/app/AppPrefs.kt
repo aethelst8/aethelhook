@@ -21,6 +21,21 @@ data class ApprovalRecord(
 internal val APPROVED_DECISIONS = setOf("allow", "allow_once", "always_allow_project", "always_allow_global")
 internal val DENIED_DECISIONS   = setOf("deny", "deny_with_reason")
 
+// Local cache of the Session Access settings sheet's last-picked model/effort/
+// permission-mode for one (project, agent) pair - purely a UI convenience so the sheet
+// reopens showing what was last chosen. The server keeps its own copy too
+// (ProjectAgentSettings in Program.cs, keyed the same "{project}|{agent}" way) which is
+// the actual source of truth once a prompt has been sent; this local copy just means a
+// phone reinstall/clear-data resets the sheet to defaults rather than losing anything
+// the server still remembers.
+@Serializable
+data class ProjectAgentSettings(
+    val model: String? = null,
+    val effort: String? = null,
+    val permissionMode: String? = null,
+    val useWorktree: Boolean = false
+)
+
 object AppPrefs {
     // Renamed from the old plaintext "aethelhook_prefs" - this file is now encrypted
     // (Android Keystore-backed AES-GCM via EncryptedSharedPreferences), so it's a
@@ -81,6 +96,7 @@ object AppPrefs {
     // Auto-clear - epoch day (ms / 86400000) of last history wipe
     private const val KEY_LAST_CLEAR_DAY = "last_clear_day"
     private const val KEY_LAST_AGENT       = "last_agent"
+    private const val KEY_PROJECT_AGENT_SETTINGS = "project_agent_settings"
 
     // ── LAN IP ────────────────────────────────────────────────────────────────
 
@@ -153,6 +169,22 @@ object AppPrefs {
     fun setLastAgent(ctx: Context, agent: String) =
         securePrefs(ctx).edit { putString(KEY_LAST_AGENT, agent) }
 
+    // ── Session Access: per (project, agent) settings sheet cache ─────────────
+
+    private fun getAllProjectAgentSettings(ctx: Context): Map<String, ProjectAgentSettings> {
+        val json = securePrefs(ctx).getString(KEY_PROJECT_AGENT_SETTINGS, "{}") ?: "{}"
+        return try { Json.decodeFromString(json) } catch (e: Exception) { emptyMap() }
+    }
+
+    fun getProjectAgentSettings(ctx: Context, projectKey: String, agent: String): ProjectAgentSettings =
+        getAllProjectAgentSettings(ctx)["$projectKey|$agent"] ?: ProjectAgentSettings()
+
+    fun setProjectAgentSettings(ctx: Context, projectKey: String, agent: String, settings: ProjectAgentSettings) {
+        val all = getAllProjectAgentSettings(ctx).toMutableMap()
+        all["$projectKey|$agent"] = settings
+        securePrefs(ctx).edit { putString(KEY_PROJECT_AGENT_SETTINGS, Json.encodeToString(all)) }
+    }
+
     // ── Approval history ──────────────────────────────────────────────────────
 
     fun getHistory(ctx: Context): List<ApprovalRecord> {
@@ -165,15 +197,15 @@ object AppPrefs {
         val prefs = securePrefs(ctx)
         val list = getHistory(ctx).toMutableList()
         list.add(0, record)
-        val trimmed = list.take(50)
-        val newTotal    = prefs.getInt(KEY_TOTAL_COUNT, 0) + 1
-        val newApproved = prefs.getInt(KEY_APPROVED_COUNT, 0) + if (record.decision in APPROVED_DECISIONS) 1 else 0
-        val newDenied   = prefs.getInt(KEY_DENIED_COUNT, 0)   + if (record.decision in DENIED_DECISIONS) 1 else 0
+        // Deliberately uncapped - the stat counters below are derived from this same
+        // list, so capping it (the original 50-entry cap) meant Total/Approved/Denied
+        // could never exceed 50 between them either, causing the count for one to fall
+        // as another rose even though real new decisions kept happening (confirmed live
+        // - reported as "Total capped at 50, Approved drops as Denied climbs"). Safe to
+        // leave uncapped because maybeClearOldHistory already wipes this list every 48
+        // hours, which bounds real-world growth to at most ~2 days of activity.
         prefs.edit {
-            putString(KEY_HISTORY, Json.encodeToString(trimmed))
-            putInt(KEY_TOTAL_COUNT, newTotal)
-            putInt(KEY_APPROVED_COUNT, newApproved)
-            putInt(KEY_DENIED_COUNT, newDenied)
+            putString(KEY_HISTORY, Json.encodeToString(list))
         }
     }
 
@@ -182,15 +214,8 @@ object AppPrefs {
         val list = getHistory(ctx).toMutableList()
         val idx = list.indexOfFirst { it.sessionId == sessionId }
         if (idx >= 0) {
-            val old = list[idx]
-            list[idx] = old.copy(decision = decision)
-            val approvedDelta = if (old.decision == "pending" && decision in APPROVED_DECISIONS) 1 else 0
-            val deniedDelta   = if (old.decision == "pending" && decision in DENIED_DECISIONS) 1 else 0
-            prefs.edit {
-                putString(KEY_HISTORY, Json.encodeToString(list))
-                if (approvedDelta > 0) putInt(KEY_APPROVED_COUNT, prefs.getInt(KEY_APPROVED_COUNT, 0) + 1)
-                if (deniedDelta > 0)   putInt(KEY_DENIED_COUNT,   prefs.getInt(KEY_DENIED_COUNT, 0)   + 1)
-            }
+            list[idx] = list[idx].copy(decision = decision)
+            prefs.edit { putString(KEY_HISTORY, Json.encodeToString(list)) }
         }
     }
 
@@ -198,23 +223,30 @@ object AppPrefs {
         val today = System.currentTimeMillis() / (24L * 60 * 60 * 1000)
         securePrefs(ctx).edit {
             remove(KEY_HISTORY)
-            putInt(KEY_TOTAL_COUNT, 0)
-            putInt(KEY_APPROVED_COUNT, 0)
-            putInt(KEY_DENIED_COUNT, 0)
+            // Legacy keys from before stat counters were derived from history - remove
+            // any stale values still sitting from an older install.
+            remove(KEY_TOTAL_COUNT)
+            remove(KEY_APPROVED_COUNT)
+            remove(KEY_DENIED_COUNT)
             putLong(KEY_LAST_CLEAR_DAY, today)
         }
     }
 
     // ── Stat counters ─────────────────────────────────────────────────────────
+    // Derived live from the stored (50-entry-capped) history list rather than
+    // tracked as separate ever-incrementing counters. Previously these were
+    // independent persistent counters that never got trimmed - once more than 50
+    // decisions had accumulated, an old denial could age out of the visible history
+    // list while the counter kept counting it forever, so the dashboard could show
+    // e.g. "Denied: 2" while tapping into it (which filters this same history list)
+    // showed zero matching records. Deriving both from the same list makes that
+    // impossible - the dashboard number always matches exactly what tapping it shows.
 
-    fun getTotalCount(ctx: Context): Int =
-        securePrefs(ctx).getInt(KEY_TOTAL_COUNT, 0)
+    fun getTotalCount(ctx: Context): Int = getHistory(ctx).size
 
-    fun getApprovedCount(ctx: Context): Int =
-        securePrefs(ctx).getInt(KEY_APPROVED_COUNT, 0)
+    fun getApprovedCount(ctx: Context): Int = getHistory(ctx).count { it.decision in APPROVED_DECISIONS }
 
-    fun getDeniedCount(ctx: Context): Int =
-        securePrefs(ctx).getInt(KEY_DENIED_COUNT, 0)
+    fun getDeniedCount(ctx: Context): Int = getHistory(ctx).count { it.decision in DENIED_DECISIONS }
 
     // ── Auto-clear every 48 hours at midnight boundary ────────────────────────
 

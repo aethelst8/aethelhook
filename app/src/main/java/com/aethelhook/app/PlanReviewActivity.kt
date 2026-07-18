@@ -34,7 +34,6 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import org.json.JSONArray
 import org.json.JSONObject
-import java.io.OutputStreamWriter
 import java.net.HttpURLConnection
 import java.net.URL
 
@@ -111,41 +110,6 @@ private suspend fun fetchPlan(ctx: Context, planUrls: List<String>, token: Strin
     return@withContext if (sawNotFound) PlanFetchResult.NotFound else PlanFetchResult.NetworkError
 }
 
-// Posts the decision, trying each candidate respond URL in order. Returns true on any 2xx.
-private suspend fun postDecision(
-    ctx: Context,
-    respondUrls: List<String>,
-    token: String,
-    sessionId: String,
-    decision: String,
-    feedbackText: String
-): Boolean = withContext(Dispatchers.IO) {
-    for (url in respondUrls) {
-        try {
-            val conn = URL(url).openConnection() as HttpURLConnection
-            conn.pinnedFromPrefs(ctx)
-            conn.requestMethod = "POST"
-            conn.setRequestProperty("Content-Type", "application/json")
-            conn.setRequestProperty("X-AethelHook-Token", token)
-            conn.doOutput = true
-            conn.connectTimeout = 10_000
-            conn.readTimeout    = 10_000
-            val body = JSONObject().apply {
-                put("session_id", sessionId)
-                put("decision", decision)
-                put("feedback", feedbackText)
-            }
-            OutputStreamWriter(conn.outputStream).use { it.write(body.toString()) }
-            val code = conn.responseCode
-            conn.disconnect()
-            if (code in 200..299) return@withContext true
-        } catch (_: Exception) {
-            // try next candidate URL
-        }
-    }
-    return@withContext false
-}
-
 @Composable
 fun PlanReviewScreen(
     sessionId: String,
@@ -177,11 +141,7 @@ fun PlanReviewScreen(
     fun submit(decision: String, feedbackText: String = "") {
         submitting = true
         scope.launch(Dispatchers.IO) {
-            if (AethelHookWebSocket.isConnected) {
-                AethelHookWebSocket.sendPlanReviewDecision(sessionId, decision, feedbackText)
-            } else {
-                postDecision(ctx, respondUrls, AppPrefs.getApiToken(ctx), sessionId, decision, feedbackText)
-            }
+            DecisionActions.submitPlanDecision(ctx, respondUrls, sessionId, decision, feedbackText)
             onDone()
         }
     }

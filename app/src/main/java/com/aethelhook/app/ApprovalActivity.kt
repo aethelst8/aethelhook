@@ -36,9 +36,6 @@ import androidx.compose.ui.unit.sp
 import com.aethelhook.app.ui.theme.*
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
-import java.io.OutputStreamWriter
-import java.net.HttpURLConnection
-import java.net.URL
 
 class ApprovalActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -126,30 +123,8 @@ fun ApprovalScreen(
 
     fun submitDecision(decision: String, reason: String = "") {
         submitting = true
-        AppPrefs.addRecord(ctx, ApprovalRecord(
-            sessionId   = sessionId,
-            toolName    = toolName,
-            preview     = cmdPreview,
-            decision    = decision,
-            timestampMs = System.currentTimeMillis()
-        ))
         scope.launch(Dispatchers.IO) {
-            try {
-                val conn = URL(respondUrl).openConnection() as HttpURLConnection
-                conn.pinnedFromPrefs(ctx)
-                conn.requestMethod = "POST"
-                conn.setRequestProperty("Content-Type", "application/json")
-                conn.setRequestProperty("X-AethelHook-Token", AppPrefs.getApiToken(ctx))
-                conn.doOutput = true
-                conn.connectTimeout = 10_000
-                conn.readTimeout    = 10_000
-                val safe = reason.replace("\\", "\\\\").replace("\"", "\\\"")
-                OutputStreamWriter(conn.outputStream).use {
-                    it.write("""{"session_id":"$sessionId","decision":"$decision","reason":"$safe"}""")
-                }
-                conn.responseCode
-                conn.disconnect()
-            } catch (_: Exception) {}
+            DecisionActions.submitApprovalDecision(ctx, respondUrl, sessionId, toolName, cmdPreview, decision, reason)
             onDone()
         }
     }

@@ -56,6 +56,14 @@ object AethelHookWebSocket {
     // app is backgrounded.
     val sessionUpdates = MutableStateFlow<JSONObject?>(null)
 
+    // Approvals/questions/plan-reviews used to have zero presence in the Sessions chat -
+    // they only ever showed as a system notification + a full-screen Activity, with no
+    // `cwd` on the payload to route them into SessionChatStore. Now that the three hook
+    // scripts forward `cwd`, this flow carries the same raw event alongside (not instead
+    // of) the existing notification, so SessionActivity can render it as an inline
+    // actionable chat item too - useful when the app is already open and foregrounded.
+    val actionableEvents = MutableStateFlow<JSONObject?>(null)
+
     private fun wsUrl(ctx: Context): String? {
         val base  = AppPrefs.getApiUrl(ctx).ifBlank { return null }
         val token = AppPrefs.getApiToken(ctx)
@@ -407,13 +415,13 @@ object AethelHookWebSocket {
         val obj = runCatching { JSONObject(text) }.getOrNull() ?: return
         when (obj.optString("type")) {
             "connected"        -> { connected = true; Log.d(TAG, "Registered: ${obj.optString("message")}") }
-            "approval_request" -> showApprovalNotification(ctx, obj)
+            "approval_request" -> { showApprovalNotification(ctx, obj); actionableEvents.value = obj }
             "agent_done"       -> showDoneNotification(ctx, obj)
-            "ask_question"     -> showQuestionNotification(ctx, obj)
-            "plan_review"      -> showPlanReviewNotification(ctx, obj)
+            "ask_question"     -> { showQuestionNotification(ctx, obj); actionableEvents.value = obj }
+            "plan_review"      -> { showPlanReviewNotification(ctx, obj); actionableEvents.value = obj }
             "session_update"   -> sessionUpdates.value = obj
             "prompt_result"    -> sessionUpdates.value = obj
-            "ack"              -> Log.d(TAG, "Decision ack'd: ${obj.optString("session_id")} → ${obj.optString("decision")}")
+            "ack"              -> { Log.d(TAG, "Decision ack'd: ${obj.optString("session_id")} → ${obj.optString("decision")}"); actionableEvents.value = obj }
             "connection_transferred" -> {
                 connected = false
                 showInfoNotification(ctx, "Connection ended", obj.optString("message", "A new device was authorized on your PC"))
