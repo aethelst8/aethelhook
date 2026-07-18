@@ -822,6 +822,126 @@ significant work session, the same way you'd update any other session/handoff fi
 Older entries can be trimmed once they're no longer relevant; this isn't a full
 changelog (see git history / memory for that), just enough to orient the next session.*
 
+**As of 2026-07-18 (Session Access settings/worktrees/inline-actions shipped as
+v1.2.0/installer 1.3; OpenCode notification-spam and dashboard-stats bugs fixed):**
+
+- **Shipped the 5-phase Session Access feature-parity work** prompted by trying
+  competing tools (Happy Coder, OpenChamber) and finding real, validated gaps to
+  fill rather than assuming parity was needed - each phase was built, deployed via
+  `install.ps1`, and live-verified against the real running service before moving
+  to the next:
+  1. Git branch + diff-stat per project in the Sessions list (new
+     `GET /hook/git-status`, TTL-cached; found and fixed a real bug along the way -
+     `git` shelled out by the LocalSystem-run service couldn't see the real user's
+     `.gitconfig` `safe.directory` entries and silently refused to touch the repo,
+     same class of issue as gotchas #1/#2, fixed via `FindRealUserProfileDir()`).
+  2. Inline actionable chat chips for approvals/questions/plan-reviews in the
+     Sessions tab, alongside (not replacing) push notifications - required
+     threading `cwd` through `on_approval_request.ps1`/`on_ask_question.ps1`/
+     `on_exit_plan.ps1` and the corresponding WS payloads (none of the three
+     carried it before). Extracted `DecisionActions.kt` so all four submission
+     surfaces (3 full-screen Activities + the new inline chips) share one
+     WS-then-HTTP-fallback implementation instead of four copies.
+  3. Per-session Model/Effort/Permission-mode settings sheet
+     (`SettingsSheet.kt`, Material3 `ModalBottomSheet` - the app's first) for
+     Claude Code - live-verified all 6 of Claude's real `--permission-mode`
+     values (`acceptEdits`/`auto`/`bypassPermissions`/`manual`/`dontAsk`/`plan`)
+     do NOT bypass AethelHook's own PreToolUse hook, including
+     `bypassPermissions` despite its name - the hook is independent of Claude's
+     own permission-mode setting entirely.
+  4. Extended model/effort to Codex and OpenCode with their own real CLI
+     vocabularies, verified live against the actual CLIs rather than docs -
+     Codex's real reasoning-effort ceiling is `xhigh` not `max` (confirmed via
+     the model's own rejection error), and `o3` is flatly unsupported on a
+     ChatGPT-plan Codex account (a real account-tier constraint, not a bug) so
+     it was left out of the model list entirely; OpenCode's `--variant` accepts
+     the full range with no rejection. Permission-mode is deliberately hidden
+     entirely for Codex/OpenCode - neither has a native concept, AethelHook's
+     own hook is already the sole gate for both regardless of any flag.
+  5. Git worktree isolation per (project, agent) - server-manages the worktree
+     identically for all three agents (`git worktree add` under
+     `C:\ProgramData\AethelHook\worktrees\`) rather than using Claude's native
+     `-w` flag only for Claude, since Codex/OpenCode have no equivalent and two
+     different code paths would have meant two different reliability
+     guarantees. Confirmed live: worktree creation is idempotent, the
+     resumable-session dictionaries correctly key off the worktree path (not
+     the project dir) once enabled, and toggling it off correctly reverts to
+     the original directory's own resumable thread. **Known follow-up, not
+     fixed**: a worktree the service creates is owned by SYSTEM, so the
+     interactive user gets Access Denied trying to delete one manually from a
+     non-elevated shell - no cleanup UI exists yet, deletion needs an elevated
+     `Remove-Item -Recurse -Force`.
+- **Found and fixed two real bugs unrelated to the above, both reported live by
+  the user mid-session:**
+  - **OpenCode's own "doom loop" bug (see gotcha #28) was spamming approval
+    notifications for over 2 hours from one stuck interactive `opencode`
+    terminal** the user had left open, re-running `git status`/`log`/`diff` and
+    its own `todowrite` calls every ~80s indefinitely. Root-caused via the
+    `[OpenCode]`-prefixed lines in `hook_debug.log` and a live process check
+    (`Get-Process -Name opencode`) that found the actual stuck PID. Fixed with
+    two changes to `.opencode\hooks\aethelhook-plugin.js`: (1) a repeat-approval
+    guard - once the phone has explicitly approved the exact same read-only git
+    subcommand twice within 15 minutes, further repeats auto-approve without a
+    new notification (fails closed on anything chained, e.g. `git status &&
+    rm -rf .` never qualifies); (2) `todowrite` is now fully exempt from the
+    approval gate, matching Claude Code's own settings.json precedent (TodoWrite
+    was never gated there either, since it's pure bookkeeping with no
+    filesystem/execution side effects - confirmed live that the stuck session's
+    `todowrite` calls never once accompanied a real Write/Edit approval request).
+    Both fixes live-verified via a direct Node script calling the plugin's
+    exported hook functions directly, sidestepping the free test model's own
+    flaky tool-calling behavior.
+  - **Dashboard stat counters (Total/Approved/Denied) were tracked as separate
+    ever-incrementing persistent counters, completely independent of the
+    50-entry-capped history list** - once more than 50 decisions had
+    accumulated, an old denial could age out of the visible/tappable history
+    while the counter kept counting it forever, so the dashboard could show
+    "Denied: 2" while the detail popup (which filters that same capped list)
+    showed zero matching records. First fix attempt (derive the 3 counts live
+    from the existing 50-cap history list) closed the drift but introduced a
+    new symptom the user caught immediately: Total got stuck at exactly 50 and
+    Approved visibly fell as Denied rose, since a fixed-size list's 3 counts
+    always sum to its cap. Root-caused that `maybeClearOldHistory` already
+    wipes the whole history list every 48 hours regardless, so removing the
+    50-entry cap in `addRecord` is safe (bounded to ~2 days of real activity,
+    not truly unbounded) - all 3 stats are now simple derived counts over an
+    uncapped-but-periodically-cleared list, so they can never drift from what
+    tapping into them shows, and Total genuinely keeps growing with real usage.
+  - Both fixes required no `install.ps1` redeploy (the OpenCode plugin is a
+    plain JS file OpenCode reloads on its own next launch) or only an APK
+    rebuild (the dashboard fix is Android-only), not backend changes.
+- **Added a read-aloud (TTS) button to the agent-summary popup** (`SummaryPopup`
+  in `MainActivity.kt`), via Android's built-in `TextToSpeech` - no new
+  dependency. Two follow-up refinements from live user feedback in the same
+  session: (1) real pause/resume instead of stop/restart-from-scratch - Android's
+  TTS has no native pause, so the summary text is split into sentence-sized
+  chunks spoken as separate utterances, and the utterance-progress listener's
+  `onStart` tracks which chunk was actually playing when paused, so resuming
+  re-queues from that chunk instead of chunk 0 (chunk-granularity pause, the
+  standard workaround given the platform API); (2) automatic highest-quality
+  installed-voice selection - the engine's default voice is often the older,
+  more robotic one, so once the engine reports ready, the code queries
+  `engine.voices` for the best `QUALITY_*` voice actually installed (not just
+  listed) for the current locale and switches to it. Both live-verified working
+  by the user via a real popup triggered directly through `adb shell am start`
+  with test extras (bypassing the need for a real agent-done event).
+- **Shipped as Android `v1.2.0`** (versionCode 5→6, versionName 1.1.0→1.2.0) and
+  Windows installer `AppVersion` 1.2→1.3 - both rebuilt
+  (`dotnet publish` ×2, signed `assembleRelease`, `ISCC.exe`), the installer
+  re-uploaded to the existing `v1.0.0` GitHub release (`--clobber`, same
+  convention as before), the Android APK as a new tagged `v1.2.0` release.
+  Website (`aethelst8.github.io`) Android download link bumped to match, lint
+  clean, pushed the same pass per the standing
+  `feedback_website_sync_after_installer_changes` rule rather than as a
+  separate follow-up.
+- **Also hit and resolved, unrelated to the feature work**: a `169.254.x.x`
+  (APIPA/link-local) bad LAN-IP detection recurred mid-session (same class of
+  race as gotcha #18's original fix, which retries for up to 60s but can still
+  lose the race) - the phone couldn't connect or re-pair at all until the user
+  ran an elevated `Restart-Service AethelHook`, which re-triggered detection
+  and picked up the real LAN IP. Left as a known possible recurrence, not
+  re-hardened further this session (user explicitly deferred deeper work here).
+
 **As of 2026-07-16 (r/LookWhatTheyBuilt launch post drafted, first Reddit testimonial
 added to the site):**
 
