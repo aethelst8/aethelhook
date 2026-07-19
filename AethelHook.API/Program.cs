@@ -304,6 +304,14 @@ var GitStatusCache = new ConcurrentDictionary<string, (GitStatusInfo Info, DateT
 var ProjectAgentSettings = new ConcurrentDictionary<string, SessionSettings>(StringComparer.OrdinalIgnoreCase);
 static string AgentSettingsKey(string cwd, string agent) => $"{cwd}|{agent}";
 
+// Last-known context-window usage per (project, agent), same key shape as
+// ProjectAgentSettings above. This is a context-window gauge ("how much of this
+// resumed conversation's context is used up"), not a billing/plan-quota figure - none
+// of the three CLIs expose the latter headlessly. Populated from each headless
+// runner's own JSON stream after every turn (see RunHeadless*PromptAsync below) and
+// read back by GET /hook/token-usage for the Sessions chat screen.
+var TokenUsageByProjectAgent = new ConcurrentDictionary<string, TokenUsageInfo>(StringComparer.OrdinalIgnoreCase);
+
 // Worktree path per (project, agent) - same key shape as ProjectAgentSettings, since a
 // worktree is scoped to one agent's sessions in one project, not shared across agents
 // (each agent gets its own isolated worktree so running Claude and Codex with worktrees
@@ -426,7 +434,11 @@ void SaveProjectState()
                 kv => kv.Key,
                 kv => new { model = kv.Value.Model, effort = kv.Value.Effort, permissionMode = kv.Value.PermissionMode },
                 StringComparer.OrdinalIgnoreCase),
-            projectWorktrees = ProjectWorktrees.ToDictionary(kv => kv.Key, kv => kv.Value, StringComparer.OrdinalIgnoreCase)
+            projectWorktrees = ProjectWorktrees.ToDictionary(kv => kv.Key, kv => kv.Value, StringComparer.OrdinalIgnoreCase),
+            tokenUsage = TokenUsageByProjectAgent.ToDictionary(
+                kv => kv.Key,
+                kv => new { agent = kv.Value.Agent, tokensUsed = kv.Value.TokensUsed, contextWindow = kv.Value.ContextWindow, model = kv.Value.Model, updatedAtUnixMs = kv.Value.UpdatedAtUnixMs },
+                StringComparer.OrdinalIgnoreCase)
         };
         var json = JsonSerializer.Serialize(state);
         lock (ProjectStateSaveLock)
@@ -484,6 +496,19 @@ void LoadProjectState()
             foreach (var prop in pwt.EnumerateObject())
                 if (prop.Value.ValueKind == JsonValueKind.String)
                     ProjectWorktrees[prop.Name] = prop.Value.GetString()!;
+
+        if (root.TryGetProperty("tokenUsage", out var tu) && tu.ValueKind == JsonValueKind.Object)
+            foreach (var prop in tu.EnumerateObject())
+            {
+                if (prop.Value.ValueKind != JsonValueKind.Object) continue;
+                var v = prop.Value;
+                string agentVal = v.TryGetProperty("agent", out var av) && av.ValueKind == JsonValueKind.String ? av.GetString()! : "claude";
+                long tokensUsed = v.TryGetProperty("tokensUsed", out var tv) && tv.TryGetInt64(out var tvv) ? tvv : 0;
+                long contextWindow = v.TryGetProperty("contextWindow", out var cv) && cv.TryGetInt64(out var cvv) ? cvv : 0;
+                string? modelVal = v.TryGetProperty("model", out var mv) && mv.ValueKind == JsonValueKind.String ? mv.GetString() : null;
+                long updatedAt = v.TryGetProperty("updatedAtUnixMs", out var uv) && uv.TryGetInt64(out var uvv) ? uvv : 0;
+                TokenUsageByProjectAgent[prop.Name] = new TokenUsageInfo(agentVal, tokensUsed, contextWindow, modelVal, updatedAt);
+            }
 
         Console.WriteLine($"[ProjectState] Restored {KnownProjects.Count} known project(s), {ProjectSessions.Count} Claude session(s), {CodexProjectSessions.Count} Codex thread(s), {OpenCodeProjectSessions.Count} OpenCode session(s) from disk");
     }
@@ -904,6 +929,26 @@ app.MapGet("/hook/git-status", async (HttpContext ctx, string dir) =>
 });
 
 // ─────────────────────────────────────────────────────────────────────────────
+// GET /hook/token-usage  ─  phone requests last-known context-window usage for all
+//                           three agents in one project directory (Sessions chat
+//                           screen's token stat row). Pure in-memory dictionary read,
+//                           populated by each headless runner after every turn - see
+//                           TokenUsageByProjectAgent's own doc comment above.
+// ─────────────────────────────────────────────────────────────────────────────
+app.MapGet("/hook/token-usage", (HttpContext ctx, string dir) =>
+{
+    if (!ValidateToken(ctx)) return Results.Unauthorized();
+    if (string.IsNullOrWhiteSpace(dir)) return Results.BadRequest(new { error = "dir is required" });
+
+    var result = new[] { "claude", "codex", "opencode" }
+        .Select(a => TokenUsageByProjectAgent.TryGetValue(AgentSettingsKey(dir, a), out var info) ? info : null)
+        .Where(info => info != null)
+        .Select(info => new { agent = info!.Agent, tokens_used = info.TokensUsed, context_window = info.ContextWindow, model = info.Model })
+        .ToList();
+    return Results.Ok(result);
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
 // POST /hook/send-prompt  ─  phone → PC (Phase 2: Session Access). Runs the
 //                            prompt as a HEADLESS `claude -p` process - NOT
 //                            injected into the live interactive session. This
@@ -1131,6 +1176,38 @@ app.MapPost("/hook/send-prompt", async (HttpContext ctx, SendPromptRequest reque
                         isError     = root.TryGetProperty("is_error", out var ie) && ie.GetBoolean();
                         resultText  = root.TryGetProperty("result", out var r) ? r.GetString() : "";
 
+                        // Context-window gauge for the Sessions chat screen. Live-verified
+                        // schema: usage.{input_tokens,output_tokens,cache_creation_input_tokens,
+                        // cache_read_input_tokens} sum to this turn's total context size, and
+                        // modelUsage.<resolved model>.contextWindow is the real max for whatever
+                        // model actually ran (no need to guess it the way Codex/OpenCode require).
+                        if (root.TryGetProperty("usage", out var usage))
+                        {
+                            long inputT  = usage.TryGetProperty("input_tokens", out var it) && it.TryGetInt64(out var itv) ? itv : 0;
+                            long outputT = usage.TryGetProperty("output_tokens", out var ot) && ot.TryGetInt64(out var otv) ? otv : 0;
+                            long cacheCreate = usage.TryGetProperty("cache_creation_input_tokens", out var cc) && cc.TryGetInt64(out var ccv) ? ccv : 0;
+                            long cacheRead   = usage.TryGetProperty("cache_read_input_tokens", out var cr) && cr.TryGetInt64(out var crv) ? crv : 0;
+                            long tokensUsed  = inputT + outputT + cacheCreate + cacheRead;
+
+                            long contextWindow = 200_000;
+                            string? resolvedModel = model;
+                            if (root.TryGetProperty("modelUsage", out var modelUsageEl) && modelUsageEl.ValueKind == JsonValueKind.Object)
+                            {
+                                foreach (var prop in modelUsageEl.EnumerateObject())
+                                {
+                                    resolvedModel = prop.Name;
+                                    if (prop.Value.TryGetProperty("contextWindow", out var cw) && cw.TryGetInt64(out var cwVal) && cwVal > 0)
+                                        contextWindow = cwVal;
+                                    break; // a single headless turn only ever reports one model
+                                }
+                            }
+
+                            TokenUsageByProjectAgent[AgentSettingsKey(workDir, "claude")] =
+                                new TokenUsageInfo("claude", tokensUsed, contextWindow, resolvedModel, DateTimeOffset.UtcNow.ToUnixTimeMilliseconds());
+                            _ = Task.Run(SaveProjectState);
+                            _ = BroadcastUsageUpdateAsync(workDir, "claude", tokensUsed, contextWindow);
+                        }
+
                         // Only pin a session to resume from on a genuine success - a
                         // transient failure shouldn't poison future resumes; the next
                         // message just starts fresh instead. Keyed by this run's own
@@ -1336,6 +1413,24 @@ app.MapPost("/hook/send-prompt", async (HttpContext ctx, SendPromptRequest reque
                     {
                         gotResult = true;
                         isError   = false;
+
+                        // Live-verified schema: usage.{input_tokens,output_tokens} - unlike
+                        // Claude, cached_input_tokens is already a subset of input_tokens here
+                        // (standard OpenAI usage semantics), not additive. Codex never reports
+                        // the model's max context window in this stream, so
+                        // EstimateContextWindow's fallback is used instead of a real figure.
+                        if (root.TryGetProperty("usage", out var usage))
+                        {
+                            long inputT  = usage.TryGetProperty("input_tokens", out var it) && it.TryGetInt64(out var itv) ? itv : 0;
+                            long outputT = usage.TryGetProperty("output_tokens", out var ot) && ot.TryGetInt64(out var otv) ? otv : 0;
+                            long tokensUsed = inputT + outputT;
+                            long contextWindow = EstimateContextWindow("codex", model);
+
+                            TokenUsageByProjectAgent[AgentSettingsKey(workDir, "codex")] =
+                                new TokenUsageInfo("codex", tokensUsed, contextWindow, model, DateTimeOffset.UtcNow.ToUnixTimeMilliseconds());
+                            _ = Task.Run(SaveProjectState);
+                            _ = BroadcastUsageUpdateAsync(workDir, "codex", tokensUsed, contextWindow);
+                        }
                     }
                     else if (type == "turn.failed" || type == "error")
                     {
@@ -1515,6 +1610,21 @@ app.MapPost("/hook/send-prompt", async (HttpContext ctx, SendPromptRequest reque
                             // synthetic "continue" nudge can restart the loop.
                             gotResult = true;
                             isError   = false;
+
+                            // Live-verified schema: part.tokens.total is OpenCode's own
+                            // pre-summed figure (input+output+reasoning+cache) - used directly
+                            // rather than re-summing the sub-fields. No max-context-window
+                            // figure is reported here either, same gap as Codex above.
+                            if (finishPart.TryGetProperty("tokens", out var tokensEl) &&
+                                tokensEl.TryGetProperty("total", out var totalEl) &&
+                                totalEl.TryGetInt64(out var totalTokens))
+                            {
+                                long contextWindow = EstimateContextWindow("opencode", model);
+                                TokenUsageByProjectAgent[AgentSettingsKey(workDir, "opencode")] =
+                                    new TokenUsageInfo("opencode", totalTokens, contextWindow, model, DateTimeOffset.UtcNow.ToUnixTimeMilliseconds());
+                                _ = Task.Run(SaveProjectState);
+                                _ = BroadcastUsageUpdateAsync(workDir, "opencode", totalTokens, contextWindow);
+                            }
                             break;
                         }
                     }
@@ -2472,6 +2582,36 @@ static async Task<bool> BroadcastSessionEventAsync(string type, string message, 
 
     return wsSent;
 }
+
+// Separate from BroadcastSessionEventAsync above rather than overloading its fixed
+// message/detail/tool_name shape - this event carries its own numeric fields instead.
+static async Task<bool> BroadcastUsageUpdateAsync(string cwd, string agent, long tokensUsed, long contextWindow)
+{
+    var payload = JsonSerializer.Serialize(new { type = "usage_update", cwd, agent, tokens_used = tokensUsed, context_window = contextWindow });
+
+    var wsSent = false;
+    if (WsClientStore.HasClients)
+    {
+        try   { wsSent = await WsClientStore.BroadcastAsync(payload); }
+        catch (Exception ex) { Console.WriteLine($"[usage_update] WS error: {ex.Message}"); }
+    }
+
+    return wsSent;
+}
+
+// Codex's `turn.completed` and OpenCode's `step_finish` events both report real token
+// counts, but neither reports the resolved model's actual max context window - unlike
+// Claude Code's own "result" message, which conveniently includes
+// modelUsage[model].contextWindow directly (read straight off that in
+// RunHeadlessPromptAsync, no estimate needed there). These are best-effort fallbacks
+// live-verified against this dev machine's default models, not a live figure from
+// either CLI - shown in the UI as an approximate gauge, never as an authoritative quota.
+static long EstimateContextWindow(string agent, string? model) => agent switch
+{
+    "codex"    => 272_000, // GPT-5-class default context window (OpenAI's published figure)
+    "opencode" => 200_000, // varies by whatever provider/model is configured - generic fallback
+    _          => 200_000
+};
 
 static void RestoreClaudeCodeHooks()
 {
@@ -3520,6 +3660,8 @@ public record SendPromptRequest(
 );
 
 public record GitStatusInfo(bool IsGitRepo, string? Branch, int Ahead, int Behind, int Added, int Deleted, bool Dirty);
+
+public record TokenUsageInfo(string Agent, long TokensUsed, long ContextWindow, string? Model, long UpdatedAtUnixMs);
 
 // Per (project directory, agent) settings the phone last chose for a headless session -
 // keyed by "{cwd}|{agent}" (not just cwd), since each agent has its own vocabulary

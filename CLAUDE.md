@@ -822,6 +822,67 @@ significant work session, the same way you'd update any other session/handoff fi
 Older entries can be trimmed once they're no longer relevant; this isn't a full
 changelog (see git history / memory for that), just enough to orient the next session.*
 
+**As of 2026-07-19 (context-window usage gauge + voice-to-prompt added to the Sessions
+chat screen - built and both `dotnet build`/`assembleDebug` pass, NOT yet live-verified
+on-device or against the redeployed service):**
+
+- **Token usage is a context-window gauge, not a plan/billing quota** - deliberately
+  scoped this way after asking the user, since none of the three CLIs expose an actual
+  subscription usage quota headlessly at all. Before writing any code, ran a real trivial
+  prompt through all three CLIs directly (`codex exec --json`, `opencode run --format
+  json`, `claude -p --output-format stream-json --verbose`) to confirm the real field
+  names rather than trusting memory of the schema - same live-verify-first discipline as
+  gotcha #27's plugin work. Confirmed:
+  - Claude's `"result"` message's `usage.{input_tokens,output_tokens,
+    cache_creation_input_tokens,cache_read_input_tokens}` sum to the turn's total context
+    size, and (the useful surprise) `modelUsage.<resolved model>.contextWindow` reports
+    the *actual* max context window for whatever model really ran - no guessing needed,
+    unlike the other two agents.
+  - Codex's `turn.completed` has `usage.{input_tokens,output_tokens}` (cached tokens are
+    already a subset of `input_tokens`, not additive) but never reports the model's max
+    window at all.
+  - OpenCode's `step_finish` event has a pre-summed `part.tokens.total` directly, also
+    with no max-window figure reported.
+  - Since Codex/OpenCode never report a real max window, added `EstimateContextWindow()`
+    with hardcoded fallbacks (272K/200K) - explicitly labeled in code and in the UI as an
+    approximation, not a live figure, to avoid presenting false precision.
+- **Server-side**: new `TokenUsageByProjectAgent` dictionary (keyed like
+  `ProjectAgentSettings`, `AgentSettingsKey(cwd, agent)`), populated inside all three
+  `RunHeadless*PromptAsync` runners after every turn, persisted in `project_state.json`
+  alongside the other per-project dictionaries, broadcast live over WS as a new
+  `usage_update` event type (`BroadcastUsageUpdateAsync`, kept separate from the existing
+  `BroadcastSessionEventAsync` rather than overloading its fixed message/detail shape),
+  and readable on-demand via a new `GET /hook/token-usage?dir=...` endpoint (mirrors
+  `/hook/git-status`'s pattern).
+- **Android**: `SessionActivity.kt`'s per-project chat screen now shows a compact 3-agent
+  stat row (Claude/Codex/OpenCode, each "12.4K/200K (6%)" or a dash if that agent's never
+  run in this project yet) under the header - shows all three at once regardless of which
+  agent is currently selected to send to, per explicit user answer, since each agent keeps
+  its own independent thread per project already. Fetched fresh on opening a project chat
+  (same per-visit-fetch pattern as the git-status row), then kept live via the new
+  `usage_update` WS event for as long as the screen stays open.
+  `AethelHookWebSocket.kt` gained a matching `usageUpdates` StateFlow alongside the
+  existing `sessionUpdates`/`actionableEvents`.
+- **Voice-to-prompt**: a mic `IconButton` in the input row launches Android's stock
+  `RecognizerIntent.ACTION_RECOGNIZE_SPEECH` (delegates to whatever speech-recognition
+  activity is installed, typically the Google app) rather than the raw on-device
+  `SpeechRecognizer` API - deliberately the simpler of the two: no `RECORD_AUDIO`
+  permission needed in AethelHook's own manifest since the resolved recognizer activity
+  holds that permission itself, and no partial-results/continuous-listening state to
+  manage. Recognized text appends to (rather than replaces) whatever's already typed.
+  Falls back to a toast if no recognizer is available on the device
+  (`intent.resolveActivity()` check) instead of silently doing nothing.
+- **Not yet done this session - needs you to finish verifying**: no Android device was
+  connected to this session's environment, so the debug APK was never installed/tested on
+  a real phone, and the API change needs an elevated `install.ps1` run (this session's
+  tools can't do that - see gotcha #3) before the new `/hook/token-usage` endpoint and
+  `usage_update` broadcasts exist on the live service at all. Both `dotnet build` and
+  `./gradlew.bat assembleDebug` succeed cleanly, but that only proves the code compiles,
+  not that the token numbers/voice input actually work end-to-end. Next session: run
+  `install.ps1`, `adb install -r` the rebuilt debug APK, send a real phone prompt to each
+  of the three agents in a test project, and confirm the stat row updates and the mic
+  button actually transcribes.
+
 **As of 2026-07-18 (Session Access settings/worktrees/inline-actions shipped as
 v1.2.0/installer 1.3; OpenCode notification-spam and dashboard-stats bugs fixed):**
 
