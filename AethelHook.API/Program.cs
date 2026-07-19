@@ -1176,17 +1176,36 @@ app.MapPost("/hook/send-prompt", async (HttpContext ctx, SendPromptRequest reque
                         isError     = root.TryGetProperty("is_error", out var ie) && ie.GetBoolean();
                         resultText  = root.TryGetProperty("result", out var r) ? r.GetString() : "";
 
-                        // Context-window gauge for the Sessions chat screen. Live-verified
-                        // schema: usage.{input_tokens,output_tokens,cache_creation_input_tokens,
-                        // cache_read_input_tokens} sum to this turn's total context size, and
+                        // Context-window gauge for the Sessions chat screen. Live-verified schema,
+                        // but with a real correction found via a second live test (a 4-turn
+                        // tool-calling prompt): usage's TOP-LEVEL input/output/cache fields are a
+                        // CUMULATIVE SUM across every internal tool-call round trip this turn made,
+                        // not a snapshot of the current context size - confirmed live, top-level
+                        // cache_read_input_tokens came back ~2.5x any single round trip's own
+                        // figure. That cumulative total is a real "tokens billed this turn" number,
+                        // but it can legitimately exceed the actual context window for a turn with
+                        // many tool calls (e.g. a multi-step git push) even though no single API
+                        // call in it ever did - confirmed live, a real user report of a reading over
+                        // 100% right after exactly this kind of multi-tool-call prompt. usage's own
+                        // "iterations" array holds one entry per round trip; its LAST entry is the
+                        // most recent individual call, i.e. the real current context fill - use that
+                        // instead, falling back to the top-level fields only if iterations is ever
+                        // absent (matches the single-turn case anyway, where they're identical).
                         // modelUsage.<resolved model>.contextWindow is the real max for whatever
                         // model actually ran (no need to guess it the way Codex/OpenCode require).
                         if (root.TryGetProperty("usage", out var usage))
                         {
-                            long inputT  = usage.TryGetProperty("input_tokens", out var it) && it.TryGetInt64(out var itv) ? itv : 0;
-                            long outputT = usage.TryGetProperty("output_tokens", out var ot) && ot.TryGetInt64(out var otv) ? otv : 0;
-                            long cacheCreate = usage.TryGetProperty("cache_creation_input_tokens", out var cc) && cc.TryGetInt64(out var ccv) ? ccv : 0;
-                            long cacheRead   = usage.TryGetProperty("cache_read_input_tokens", out var cr) && cr.TryGetInt64(out var crv) ? crv : 0;
+                            var usageForContext = usage;
+                            if (usage.TryGetProperty("iterations", out var iterationsEl) &&
+                                iterationsEl.ValueKind == JsonValueKind.Array && iterationsEl.GetArrayLength() > 0)
+                            {
+                                usageForContext = iterationsEl.EnumerateArray().Last();
+                            }
+
+                            long inputT  = usageForContext.TryGetProperty("input_tokens", out var it) && it.TryGetInt64(out var itv) ? itv : 0;
+                            long outputT = usageForContext.TryGetProperty("output_tokens", out var ot) && ot.TryGetInt64(out var otv) ? otv : 0;
+                            long cacheCreate = usageForContext.TryGetProperty("cache_creation_input_tokens", out var cc) && cc.TryGetInt64(out var ccv) ? ccv : 0;
+                            long cacheRead   = usageForContext.TryGetProperty("cache_read_input_tokens", out var cr) && cr.TryGetInt64(out var crv) ? crv : 0;
                             long tokensUsed  = inputT + outputT + cacheCreate + cacheRead;
 
                             long contextWindow = 200_000;
