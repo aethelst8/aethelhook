@@ -1,7 +1,12 @@
 package com.aethelhook.app
 
+import android.app.Activity
 import android.content.Context
 import android.content.Intent
+import android.speech.RecognizerIntent
+import android.widget.Toast
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
@@ -16,6 +21,7 @@ import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.automirrored.filled.Send
 import androidx.compose.material.icons.automirrored.filled.KeyboardArrowRight
 import androidx.compose.material.icons.filled.FolderOpen
+import androidx.compose.material.icons.filled.Mic
 import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.SmartToy
 import androidx.compose.material.icons.filled.Tune
@@ -99,6 +105,12 @@ private data class GitStatus(
     val deleted: Int,
     val dirty: Boolean
 )
+
+// Context-window usage for one agent in one project - see Program.cs's
+// TokenUsageByProjectAgent for how this is populated server-side. contextWindow is exact
+// for Claude (read from the CLI's own result JSON) but an approximation for Codex/OpenCode
+// (neither reports its model's real max), so this is shown as a gauge, not a hard quota.
+private data class TokenUsage(val agent: String, val tokensUsed: Long, val contextWindow: Long)
 
 // on_tool_done.ps1 fires for EVERY tool call in EVERY Claude Code window (hooks are
 // global, per PreToolUse/PostToolUse/SessionStart), not just phone-initiated headless
@@ -226,6 +238,35 @@ private suspend fun fetchGitStatus(baseUrl: String, ctx: Context, dir: String): 
     } catch (e: Exception) {
         null
     }
+}
+
+// Context-window usage row, shown for all three agents at once regardless of which one
+// is currently selected - each keeps its own separate resumable thread per project
+// already (see the agent toggle above), so seeing only the selected agent's number would
+// hide real usage building up in the other two.
+private suspend fun fetchTokenUsage(baseUrl: String, ctx: Context, dir: String): Map<String, TokenUsage> = withContext(Dispatchers.IO) {
+    try {
+        val url = "$baseUrl/hook/token-usage?dir=${java.net.URLEncoder.encode(dir, "UTF-8")}"
+        val request  = Request.Builder().url(url).get().build()
+        val response = AethelHookWebSocket.newBoundHttpClient(ctx).newCall(request).execute()
+        response.use {
+            if (!it.isSuccessful) return@withContext emptyMap()
+            val arr = org.json.JSONArray(it.body?.string().orEmpty())
+            (0 until arr.length()).mapNotNull { i ->
+                val obj = arr.getJSONObject(i)
+                val agent = obj.optString("agent").ifBlank { return@mapNotNull null }
+                agent to TokenUsage(agent, obj.optLong("tokens_used", 0), obj.optLong("context_window", 0))
+            }.toMap()
+        }
+    } catch (e: Exception) {
+        emptyMap()
+    }
+}
+
+private fun formatTokenCount(n: Long): String = when {
+    n >= 1_000_000 -> "%.1fM".format(n / 1_000_000.0)
+    n >= 1_000     -> "%.0fK".format(n / 1_000.0)
+    else           -> n.toString()
 }
 
 // Root of the Sessions tab - always starts on the project list (`activeProject == null`)
@@ -394,6 +435,25 @@ private fun SessionChatScreen(ctx: Context, project: ProjectInfo, onBack: () -> 
     val chat = SessionChatStore.messagesFor(selectedKey)
     val thinking = SessionChatStore.isThinking(selectedKey)
 
+    // Context-window usage row - fetched fresh on every entry into this chat (mirrors
+    // ProjectHomeCard's own per-visit git-status fetch), then kept live via usage_update
+    // broadcasts for as long as this screen stays open.
+    var tokenUsage by remember(project.path) { mutableStateOf<Map<String, TokenUsage>>(emptyMap()) }
+    LaunchedEffect(project.path) {
+        tokenUsage = fetchTokenUsage(AppPrefs.getApiUrl(ctx), ctx, project.path)
+    }
+    val usageUpdate by AethelHookWebSocket.usageUpdates.collectAsState()
+    LaunchedEffect(usageUpdate) {
+        val u = usageUpdate ?: return@LaunchedEffect
+        if (projectKey(u.optString("cwd").ifBlank { null }) == selectedKey) {
+            val agent = u.optString("agent")
+            if (agent.isNotBlank()) {
+                tokenUsage = tokenUsage + (agent to TokenUsage(agent, u.optLong("tokens_used", 0), u.optLong("context_window", 0)))
+            }
+        }
+        AethelHookWebSocket.usageUpdates.value = null
+    }
+
     val update by AethelHookWebSocket.sessionUpdates.collectAsState()
     LaunchedEffect(update) {
         val u = update ?: return@LaunchedEffect
@@ -542,6 +602,31 @@ private fun SessionChatScreen(ctx: Context, project: ProjectInfo, onBack: () -> 
     }
     var showSettingsSheet by remember { mutableStateOf(false) }
 
+    // Voice-to-prompt: delegates to the system speech-recognition activity (typically the
+    // Google app) rather than the raw on-device SpeechRecognizer API - no RECORD_AUDIO
+    // permission needed in our own manifest, since the resolved recognizer activity holds
+    // that permission itself, not us. Appends to (rather than replaces) whatever's already
+    // typed, so it composes with manual editing instead of clobbering it.
+    val speechLauncher = rememberLauncherForActivityResult(ActivityResultContracts.StartActivityForResult()) { result ->
+        if (result.resultCode == Activity.RESULT_OK) {
+            val spoken = result.data?.getStringArrayListExtra(RecognizerIntent.EXTRA_RESULTS)?.firstOrNull()
+            if (!spoken.isNullOrBlank()) {
+                prompt = if (prompt.isBlank()) spoken else "${prompt.trimEnd()} $spoken"
+            }
+        }
+    }
+    fun startVoiceInput() {
+        val intent = Intent(RecognizerIntent.ACTION_RECOGNIZE_SPEECH).apply {
+            putExtra(RecognizerIntent.EXTRA_LANGUAGE_MODEL, RecognizerIntent.LANGUAGE_MODEL_FREE_FORM)
+            putExtra(RecognizerIntent.EXTRA_PROMPT, "Speak your prompt")
+        }
+        if (intent.resolveActivity(ctx.packageManager) != null) {
+            speechLauncher.launch(intent)
+        } else {
+            Toast.makeText(ctx, "Voice input isn't available on this device", Toast.LENGTH_SHORT).show()
+        }
+    }
+
     fun submit() {
         val text = prompt.trim()
         if (text.isEmpty() || sending) return
@@ -609,6 +694,8 @@ private fun SessionChatScreen(ctx: Context, project: ProjectInfo, onBack: () -> 
             }
         }
 
+        TokenUsageRow(tokenUsage)
+
         // Chat timeline - fills all remaining space.
         LazyColumn(
             state = listState,
@@ -649,6 +736,9 @@ private fun SessionChatScreen(ctx: Context, project: ProjectInfo, onBack: () -> 
             verticalAlignment = Alignment.Bottom,
             horizontalArrangement = Arrangement.spacedBy(8.dp)
         ) {
+            IconButton(onClick = { startVoiceInput() }, modifier = Modifier.padding(bottom = 2.dp)) {
+                Icon(Icons.Default.Mic, contentDescription = "Voice input", tint = c.accentCyan, modifier = Modifier.size(20.dp))
+            }
             OutlinedTextField(
                 value = prompt,
                 onValueChange = { prompt = it },
@@ -840,6 +930,42 @@ private fun ActionChip(label: String, color: Color, onClick: () -> Unit) {
     ) {
         Text(label, color = color, fontSize = 12.sp, fontWeight = FontWeight.SemiBold)
     }
+}
+
+// Context-window usage row for the currently open project - one compact stat per agent,
+// shown for all three at once even though only one is selected to send to right now (see
+// the fetchTokenUsage/tokenUsage state in SessionChatScreen). An agent that has never run
+// in this project yet just shows a dash rather than 0%, since 0% would misleadingly imply
+// a real, empty conversation exists.
+@Composable
+private fun TokenUsageRow(usage: Map<String, TokenUsage>) {
+    Row(
+        modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 2.dp),
+        horizontalArrangement = Arrangement.spacedBy(14.dp)
+    ) {
+        for (agent in listOf("claude", "codex", "opencode")) {
+            TokenUsageChip(agentLabel(agent), usage[agent])
+        }
+    }
+}
+
+@Composable
+private fun TokenUsageChip(label: String, usage: TokenUsage?) {
+    val c = LocalAethelColors.current
+    if (usage == null || usage.contextWindow <= 0) {
+        Text("$label –", color = c.textMuted, fontSize = 10.sp, fontWeight = FontWeight.Medium)
+        return
+    }
+    val pct = (usage.tokensUsed * 100 / usage.contextWindow).toInt().coerceIn(0, 100)
+    val color = when {
+        pct >= 80 -> c.accentRed
+        pct >= 50 -> c.accentAmber
+        else      -> c.accentGreen
+    }
+    Text(
+        "$label ${formatTokenCount(usage.tokensUsed)}/${formatTokenCount(usage.contextWindow)} ($pct%)",
+        color = color, fontSize = 10.sp, fontWeight = FontWeight.Medium
+    )
 }
 
 // Shown while waiting for the PC's first reply to a sent prompt - the headless run can

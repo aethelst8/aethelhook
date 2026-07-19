@@ -64,6 +64,11 @@ object AethelHookWebSocket {
     // actionable chat item too - useful when the app is already open and foregrounded.
     val actionableEvents = MutableStateFlow<JSONObject?>(null)
 
+    // Context-window usage gauge (see Program.cs's TokenUsageByProjectAgent) - one event
+    // per (project, agent) after every headless turn. Same latest-value-only shape as
+    // sessionUpdates above.
+    val usageUpdates = MutableStateFlow<JSONObject?>(null)
+
     private fun wsUrl(ctx: Context): String? {
         val base  = AppPrefs.getApiUrl(ctx).ifBlank { return null }
         val token = AppPrefs.getApiToken(ctx)
@@ -421,6 +426,7 @@ object AethelHookWebSocket {
             "plan_review"      -> { showPlanReviewNotification(ctx, obj); actionableEvents.value = obj }
             "session_update"   -> sessionUpdates.value = obj
             "prompt_result"    -> sessionUpdates.value = obj
+            "usage_update"     -> usageUpdates.value = obj
             "ack"              -> { Log.d(TAG, "Decision ack'd: ${obj.optString("session_id")} → ${obj.optString("decision")}"); actionableEvents.value = obj }
             "connection_transferred" -> {
                 connected = false
