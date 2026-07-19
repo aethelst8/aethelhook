@@ -822,9 +822,10 @@ significant work session, the same way you'd update any other session/handoff fi
 Older entries can be trimmed once they're no longer relevant; this isn't a full
 changelog (see git history / memory for that), just enough to orient the next session.*
 
-**As of 2026-07-19 (context-window usage gauge + voice-to-prompt added to the Sessions
-chat screen - built and both `dotnet build`/`assembleDebug` pass, NOT yet live-verified
-on-device or against the redeployed service):**
+**As of 2026-07-19 (context-window usage gauge + voice-to-prompt shipped and
+live-verified; a real formula bug found and fixed the same day; notification-dismiss
+bug fixed; Sessions chat + whole app UI redesigned to a floating glass-pill look -
+shipped as Android v1.3.0 / installer 1.4):**
 
 - **Token usage is a context-window gauge, not a plan/billing quota** - deliberately
   scoped this way after asking the user, since none of the three CLIs expose an actual
@@ -872,16 +873,88 @@ on-device or against the redeployed service):**
   manage. Recognized text appends to (rather than replaces) whatever's already typed.
   Falls back to a toast if no recognizer is available on the device
   (`intent.resolveActivity()` check) instead of silently doing nothing.
-- **Not yet done this session - needs you to finish verifying**: no Android device was
-  connected to this session's environment, so the debug APK was never installed/tested on
-  a real phone, and the API change needs an elevated `install.ps1` run (this session's
-  tools can't do that - see gotcha #3) before the new `/hook/token-usage` endpoint and
-  `usage_update` broadcasts exist on the live service at all. Both `dotnet build` and
-  `./gradlew.bat assembleDebug` succeed cleanly, but that only proves the code compiles,
-  not that the token numbers/voice input actually work end-to-end. Next session: run
-  `install.ps1`, `adb install -r` the rebuilt debug APK, send a real phone prompt to each
-  of the three agents in a test project, and confirm the stat row updates and the mic
-  button actually transcribes.
+- **Live-verified same day** after the user ran `install.ps1` and connected the phone via
+  USB: token stat row and mic button both confirmed working end-to-end on a real device.
+- **Found and fixed a real formula bug the same day, from a live user report**: after a
+  multi-tool-call "push to github" prompt, the phone showed `Claude 2.2M/1.0M (100%)`,
+  then a follow-up prompt showed it reset to near-0 before climbing back to `1.2M/1.0M`.
+  Root cause, confirmed via a second live test (a deliberate 4-tool-call prompt): Claude's
+  `usage` TOP-LEVEL fields are a **cumulative sum across every internal tool-call round
+  trip in that turn**, not a snapshot of current context size - confirmed live, top-level
+  `cache_read_input_tokens` came back ~2.5x any single round trip's own figure. That's a
+  real "tokens billed this turn" number, but it can legitimately exceed the actual context
+  window for a turn with many tool calls (a git push being exactly that) even though no
+  single API call in it ever did. The reset-to-0 was a secondary effect: the push likely
+  errored partway, which clears the pinned resumable session (existing behavior), so the
+  next prompt's cumulative count started over from near-zero and re-inflated the same way.
+  Fix: use the LAST entry in `usage.iterations` (the most recent individual round trip)
+  instead of the top-level cumulative total - that's the real current context fill.
+  Falls back to the top-level fields only if `iterations` is ever absent (identical result
+  in the single-turn case anyway). Codex/OpenCode's own usage fields were left alone -
+  neither exposes a comparable per-iteration breakdown to apply the same correction to,
+  and this bug was only ever confirmed for Claude.
+- **Fixed a real bug found by the user via live testing**: answering an approval/question/
+  plan-review from the Sessions chat's inline chips (or from a chip-opened full-screen
+  Activity) left the original system notification sitting in the shade - only tapping the
+  notification itself or its own quick-action buttons had ever cleared it. Root cause: no
+  code path existed to reach back and dismiss a notification from a *different* surface
+  answering the same decision. Fix: new `NotificationRegistry` (in `AethelHookWebSocket.kt`)
+  maps `session_id -> notificationId` at the moment each notification is shown;
+  `DecisionActions`' three shared submit functions (used by all four answer surfaces - the
+  three full-screen Activities and the Sessions inline chips) now cancel via that registry
+  as their first step, so a decision answered from anywhere dismisses the notification
+  everywhere. `DecisionBroadcastReceiver` (the notification's own quick-action buttons)
+  already canceled itself directly via its own `notification_id` extra - left as-is,
+  just also purges the registry entry for tidiness. Also added the "Always allow" quick
+  action to the Sessions inline approval chips (previously only Allow/Deny), matching the
+  system notification's own 3 buttons exactly (Allow once/Always allow project/Deny) -
+  the full `ApprovalActivity`'s 2 extra options (always-allow-globally, deny-with-reason)
+  live behind its own "More options" section, not on the notification, so deliberately
+  left out of the chips too for parity with what the notification itself offers.
+- **Whole app UI redesigned to a floating "liquid glass" look**, prompted by the user
+  sharing reference screenshots (Apple Music's floating tab bar + mini-player, Samsung
+  Settings' floating back-button chip over content that scrolls behind it) and pointing
+  out that AethelHook's own headers/nav, while already glass-styled, were still full
+  layout blocks that pushed content down and wasted vertical space on small screens
+  rather than floating over it:
+  - Removed the root `Scaffold` from `AethelHookApp` entirely - its `bottomBar` slot
+    reserved its own dedicated layout region and padded every screen's content away from
+    behind it, which is the opposite of "floating over content." The nav pill is now a
+    plain overlay `Box` aligned `BottomCenter` inside the same root `Box` as the screen
+    content, which now renders full-bleed.
+  - New shared `FloatingHeaderBar` composable (same glass-pill visual recipe as the
+    existing nav pill: translucent background, gradient border, rounded corners) used by
+    every screen (Dashboard, Sessions list, Sessions chat, History, Settings) - pinned to
+    the very top via `statusBarsPadding()` instead of each screen guessing a fixed
+    `padding(top = 56.dp)` inside its own scrollable content (which meant the header
+    itself scrolled away with the content beneath it, the exact complaint). Each screen
+    measures the bar's own rendered height via `onGloballyPositioned` and feeds it back
+    as that screen's content top-padding, so content starts exactly where the header ends
+    regardless of device/status-bar height - no more magic-number guessing.
+  - **Real bug hit and fixed while building this**: `onGloballyPositioned` was placed
+    *after* `statusBarsPadding()`/`padding()` in the modifier chain - a modifier only
+    measures what's nested inside it, so putting it last reported just the inner glass
+    card's own height and silently dropped the status-bar inset + outer padding from the
+    total, undershooting every screen's measured header height by exactly that amount.
+    Confirmed live via a real screenshot the user sent: every screen's second card was
+    rendering partly behind/under the header. Fixed by moving `onGloballyPositioned` to
+    wrap `statusBarsPadding()`/`padding()` instead (first in the chain), confirmed fixed
+    via a follow-up screenshot.
+  - Sessions chat screen: the floating nav pill is now hidden entirely while a project
+    chat is open (`SessionScreen` gained an `onChatOpenChanged` callback, hoisted into
+    `AethelHookApp`'s own state) - the user relies on the phone's own back gesture there
+    instead, per explicit request, so only the input row occupies the bottom of that
+    screen. That input row (mic button, text field, send button) was also converted to
+    the same floating glass-pill card as the header/nav, rather than sitting bare on the
+    background - the text field's own border/container were made transparent so the
+    surrounding card reads as the single input surface, not two stacked borders.
+  - The chat screen's token-usage stat row now lives stacked inside the SAME floating
+    header card as the back-arrow/project-name/agent-toggle row (both are children of one
+    `FloatingHeaderBar`'s `Column` content), not a separate floating element - this
+    required generalizing `FloatingHeaderBar`'s content slot from `RowScope` to
+    `ColumnScope` (each caller wraps its own row(s) explicitly now).
+  - Live-verified via screenshots at each step: header/content overlap confirmed fixed,
+    floating input bar confirmed matching the rest of the app's visual language.
 
 **As of 2026-07-18 (Session Access settings/worktrees/inline-actions shipped as
 v1.2.0/installer 1.3; OpenCode notification-spam and dashboard-stats bugs fixed):**

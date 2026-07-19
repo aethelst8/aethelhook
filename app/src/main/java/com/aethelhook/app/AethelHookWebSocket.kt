@@ -24,6 +24,29 @@ import java.net.InetSocketAddress
 import java.net.NetworkInterface
 import java.util.concurrent.TimeUnit
 
+// Maps a decision's session_id to the system notification shown for it, so a decision
+// answered from ANY surface (Sessions inline chat chips, a deep-linked full-screen
+// Activity opened without ever tapping the original notification, etc.) can dismiss that
+// notification too - not just the tap/quick-action-button path, which already removes it
+// itself (tap via setAutoCancel, quick actions via their own explicit cancel(notifId)).
+// In-memory only: a notification that outlives the process is already gone with it.
+object NotificationRegistry {
+    private val idsBySession = mutableMapOf<String, Int>()
+
+    fun register(sessionId: String, notificationId: Int) {
+        if (sessionId.isNotBlank()) idsBySession[sessionId] = notificationId
+    }
+
+    fun cancel(ctx: Context, sessionId: String) {
+        val id = idsBySession.remove(sessionId) ?: return
+        NotificationManagerCompat.from(ctx).cancel(id)
+    }
+
+    fun forget(sessionId: String) {
+        idsBySession.remove(sessionId)
+    }
+}
+
 object AethelHookWebSocket {
 
     private const val TAG = "AethelHookWS"
@@ -530,6 +553,7 @@ object AethelHookWebSocket {
                 .addAction(android.R.drawable.ic_delete,    "Deny",                        denyPi)
                 .build()
         )
+        NotificationRegistry.register(sessionId, notificationId)
         Log.d(TAG, "Approval notification shown for $sessionId (via $via)")
     }
 
@@ -579,6 +603,7 @@ object AethelHookWebSocket {
                 .setContentIntent(openPi)
                 .build()
         )
+        NotificationRegistry.register(sessionId, notificationId)
         Log.d(TAG, "Question notification shown for $sessionId (via $via)")
     }
 
@@ -629,6 +654,7 @@ object AethelHookWebSocket {
                 .setContentIntent(openPi)
                 .build()
         )
+        NotificationRegistry.register(sessionId, notificationId)
         Log.d(TAG, "Plan review notification shown for $sessionId (via $via)")
     }
 

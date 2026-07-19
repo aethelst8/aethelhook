@@ -25,6 +25,7 @@ object DecisionActions {
         decision: String,
         reason: String = ""
     ) = withContext(Dispatchers.IO) {
+        NotificationRegistry.cancel(ctx, sessionId)
         AppPrefs.addRecord(ctx, ApprovalRecord(
             sessionId   = sessionId,
             toolName    = toolName,
@@ -62,6 +63,7 @@ object DecisionActions {
         sessionId: String,
         answers: JSONObject
     ) = withContext(Dispatchers.IO) {
+        NotificationRegistry.cancel(ctx, sessionId)
         if (AethelHookWebSocket.isConnected) {
             AethelHookWebSocket.sendQuestionAnswer(sessionId, answers)
         } else if (answerUrl.isNotBlank()) {
@@ -92,6 +94,7 @@ object DecisionActions {
         decision: String,
         feedback: String = ""
     ) = withContext(Dispatchers.IO) {
+        NotificationRegistry.cancel(ctx, sessionId)
         if (AethelHookWebSocket.isConnected) {
             AethelHookWebSocket.sendPlanReviewDecision(sessionId, decision, feedback)
             return@withContext

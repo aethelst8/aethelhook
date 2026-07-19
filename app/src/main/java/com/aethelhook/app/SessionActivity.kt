@@ -31,6 +31,7 @@ import androidx.compose.runtime.snapshots.SnapshotStateList
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
@@ -274,8 +275,16 @@ private fun formatTokenCount(n: Long): String = when {
 // SessionChatStore's comment above); there is deliberately no restore-last-project
 // behavior here anymore.
 @Composable
-fun SessionScreen(ctx: Context) {
+fun SessionScreen(ctx: Context, onChatOpenChanged: (Boolean) -> Unit = {}) {
     var activeProject by remember { mutableStateOf<ProjectInfo?>(null) }
+
+    // The floating bottom nav pill is hidden by the caller (AethelHookApp) while a chat
+    // is open - reported here rather than derived externally since only this composable
+    // knows which of its two internal views is showing.
+    DisposableEffect(activeProject) {
+        onChatOpenChanged(activeProject != null)
+        onDispose { onChatOpenChanged(false) }
+    }
 
     val project = activeProject
     if (project == null) {
@@ -309,33 +318,9 @@ private fun SessionsHomeScreen(ctx: Context, onSelectProject: (ProjectInfo) -> U
 
     LaunchedEffect(Unit) { refresh() }
 
-    Column(modifier = Modifier.fillMaxSize()) {
-        Row(
-            modifier = Modifier.fillMaxWidth().statusBarsPadding().padding(horizontal = 20.dp, vertical = 12.dp),
-            verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.spacedBy(8.dp)
-        ) {
-            Text("Sessions", fontWeight = FontWeight.Bold, fontSize = 22.sp, color = c.textPrimary)
-            Box(
-                modifier = Modifier
-                    .clip(RoundedCornerShape(50))
-                    .background(c.accentAmber.copy(alpha = 0.15f))
-                    .border(1.dp, c.accentAmber.copy(alpha = 0.4f), RoundedCornerShape(50))
-                    .padding(horizontal = 10.dp, vertical = 3.dp)
-            ) {
-                Text("BETA", color = c.accentAmber, fontSize = 10.sp, fontWeight = FontWeight.Bold)
-            }
-            Spacer(Modifier.weight(1f))
-            IconButton(onClick = { refresh() }) {
-                Icon(Icons.Default.Refresh, contentDescription = "Refresh", tint = c.accentCyan, modifier = Modifier.size(20.dp))
-            }
-        }
-        Text(
-            "Pick a project to send a prompt to your PC.",
-            color = c.textSecondary, fontSize = 12.sp,
-            modifier = Modifier.padding(start = 20.dp, end = 20.dp, bottom = 10.dp)
-        )
+    var headerHeight by remember { mutableStateOf(72.dp) }
 
+    Box(modifier = Modifier.fillMaxSize()) {
         when {
             loading -> Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
                 CircularProgressIndicator(modifier = Modifier.size(22.dp), color = c.accentCyan, strokeWidth = 2.dp)
@@ -356,13 +341,43 @@ private fun SessionsHomeScreen(ctx: Context, onSelectProject: (ProjectInfo) -> U
                 }
             }
             else -> LazyColumn(
-                contentPadding = PaddingValues(horizontal = 16.dp, vertical = 4.dp),
+                contentPadding = PaddingValues(start = 16.dp, end = 16.dp, top = headerHeight + 4.dp, bottom = BOTTOM_NAV_CLEARANCE),
                 verticalArrangement = Arrangement.spacedBy(10.dp)
             ) {
+                item {
+                    Text(
+                        "Pick a project to send a prompt to your PC.",
+                        color = c.textSecondary, fontSize = 12.sp,
+                        modifier = Modifier.padding(horizontal = 4.dp, vertical = 4.dp)
+                    )
+                }
                 items(projects) { proj ->
                     ProjectHomeCard(ctx = ctx, proj = proj, onClick = { onSelectProject(proj) })
                 }
                 item { Spacer(Modifier.height(8.dp)) }
+            }
+        }
+
+        FloatingHeaderBar(
+            modifier = Modifier.align(Alignment.TopCenter),
+            onHeightMeasured = { headerHeight = it }
+        ) {
+            Row(modifier = Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+                Text("Sessions", fontWeight = FontWeight.Bold, fontSize = 18.sp, color = c.textPrimary)
+                Spacer(Modifier.width(8.dp))
+                Box(
+                    modifier = Modifier
+                        .clip(RoundedCornerShape(50))
+                        .background(c.accentAmber.copy(alpha = 0.15f))
+                        .border(1.dp, c.accentAmber.copy(alpha = 0.4f), RoundedCornerShape(50))
+                        .padding(horizontal = 10.dp, vertical = 3.dp)
+                ) {
+                    Text("BETA", color = c.accentAmber, fontSize = 10.sp, fontWeight = FontWeight.Bold)
+                }
+                Spacer(Modifier.weight(1f))
+                IconButton(onClick = { refresh() }) {
+                    Icon(Icons.Default.Refresh, contentDescription = "Refresh", tint = c.accentCyan, modifier = Modifier.size(20.dp))
+                }
             }
         }
     }
@@ -645,62 +660,18 @@ private fun SessionChatScreen(ctx: Context, project: ProjectInfo, onBack: () -> 
         }
     }
 
+    var headerHeight by remember { mutableStateOf(96.dp) }
+
+    Box(modifier = Modifier.fillMaxSize()) {
     Column(modifier = Modifier.fillMaxSize()) {
-        // Header - back arrow to the Sessions list, project name, agent toggle.
-        Row(
-            modifier = Modifier.fillMaxWidth().statusBarsPadding().padding(horizontal = 8.dp, vertical = 8.dp),
-            verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.spacedBy(4.dp)
-        ) {
-            IconButton(onClick = onBack) {
-                Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Back to Sessions", tint = c.textPrimary)
-            }
-            Text(
-                project.label,
-                fontWeight = FontWeight.Bold, fontSize = 17.sp, color = c.textPrimary,
-                maxLines = 1, overflow = TextOverflow.Ellipsis,
-                modifier = Modifier.weight(1f)
-            )
-            // Per-message agent toggle - each send uses whichever is currently picked,
-            // and every project keeps independent Claude/Codex/OpenCode chat + resumable
-            // threads (ProjectSessions/CodexProjectSessions/OpenCodeProjectSessions on
-            // the server), so cycling this doesn't lose or mix up any conversation.
-            Row(
-                modifier = Modifier
-                    .clip(RoundedCornerShape(50))
-                    .background(c.bgCardAlt)
-                    .clickable {
-                        selectedAgent = when (selectedAgent) {
-                            "claude"   -> "codex"
-                            "codex"    -> "opencode"
-                            else       -> "claude"
-                        }
-                        AppPrefs.setLastAgent(ctx, selectedAgent)
-                    }
-                    .padding(horizontal = 10.dp, vertical = 5.dp),
-                verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.spacedBy(4.dp)
-            ) {
-                Icon(Icons.Default.SmartToy, contentDescription = null, tint = c.accentCyan, modifier = Modifier.size(13.dp))
-                Text(
-                    agentLabel(selectedAgent),
-                    color = c.textPrimary, fontSize = 11.sp, maxLines = 1
-                )
-            }
-            // Model/effort settings, all 3 agents - permission-mode within the sheet is
-            // Claude-only (see SettingsSheet.kt).
-            IconButton(onClick = { showSettingsSheet = true }) {
-                Icon(Icons.Default.Tune, contentDescription = "Session settings", tint = c.textMuted, modifier = Modifier.size(18.dp))
-            }
-        }
-
-        TokenUsageRow(tokenUsage)
-
-        // Chat timeline - fills all remaining space.
+        // Chat timeline - fills all remaining space; top-padded to clear the floating
+        // header measured below, since this screen has no bottom nav to also clear (it's
+        // hidden globally by AethelHookApp while a chat is open - the phone's own back
+        // gesture/button is how the user leaves this screen instead).
         LazyColumn(
             state = listState,
             modifier = Modifier.weight(1f).fillMaxWidth(),
-            contentPadding = PaddingValues(horizontal = 12.dp, vertical = 8.dp),
+            contentPadding = PaddingValues(start = 12.dp, end = 12.dp, top = headerHeight + 4.dp, bottom = 8.dp),
             verticalArrangement = Arrangement.spacedBy(6.dp)
         ) {
             if (chat.isEmpty()) {
@@ -726,54 +697,136 @@ private fun SessionChatScreen(ctx: Context, project: ProjectInfo, onBack: () -> 
             )
         }
 
-        // Pinned input row - text field + small circular send button, no wasted space.
-        Row(
+        // Floating input bar - same glass-pill visual language as FloatingHeaderBar/
+        // FloatingPillNav (translucent rounded card with margin around it, not a flush
+        // full-width bar) rather than the mic/field/send row sitting bare on the
+        // background. Mic button, text field, and send button are the only bottom UI on
+        // this screen - no bottom nav to compete with, same reasoning as the LazyColumn's
+        // top padding above.
+        Box(
             modifier = Modifier
                 .fillMaxWidth()
                 .navigationBarsPadding()
                 .imePadding()
-                .padding(horizontal = 12.dp, vertical = 8.dp),
-            verticalAlignment = Alignment.Bottom,
-            horizontalArrangement = Arrangement.spacedBy(8.dp)
+                .padding(horizontal = 12.dp, vertical = 8.dp)
         ) {
-            IconButton(onClick = { startVoiceInput() }, modifier = Modifier.padding(bottom = 2.dp)) {
-                Icon(Icons.Default.Mic, contentDescription = "Voice input", tint = c.accentCyan, modifier = Modifier.size(20.dp))
-            }
-            OutlinedTextField(
-                value = prompt,
-                onValueChange = { prompt = it },
-                modifier = Modifier.weight(1f),
-                placeholder = { Text("Message your PC…", color = c.textMuted, fontSize = 13.sp) },
-                maxLines = 5,
-                shape = RoundedCornerShape(22.dp),
-                colors = OutlinedTextFieldDefaults.colors(
-                    focusedBorderColor   = c.accentCyan,
-                    unfocusedBorderColor = c.divider,
-                    focusedTextColor     = c.textPrimary,
-                    unfocusedTextColor   = c.textPrimary,
-                    cursorColor          = c.accentCyan
-                )
-            )
-            val canSend = prompt.isNotBlank() && !sending
-            Box(
+            Row(
                 modifier = Modifier
-                    .size(46.dp)
-                    .clip(CircleShape)
-                    .background(if (canSend) c.accentCyan else c.textMuted.copy(alpha = 0.15f))
-                    .then(if (canSend) Modifier.clickable { submit() } else Modifier),
-                contentAlignment = Alignment.Center
-            ) {
-                if (sending) {
-                    CircularProgressIndicator(modifier = Modifier.size(18.dp), color = c.bgDeep, strokeWidth = 2.dp)
-                } else {
-                    Icon(
-                        Icons.AutoMirrored.Filled.Send,
-                        contentDescription = "Send",
-                        tint = if (canSend) c.bgDeep else c.textMuted,
-                        modifier = Modifier.size(18.dp)
+                    .fillMaxWidth()
+                    .clip(RoundedCornerShape(28.dp))
+                    .background(if (c.isDark) Color.Black.copy(alpha = 0.55f) else Color.White.copy(alpha = 0.60f))
+                    .border(
+                        1.dp,
+                        Brush.verticalGradient(
+                            colors = listOf(
+                                Color.White.copy(alpha = if (c.isDark) 0.22f else 0.80f),
+                                Color.White.copy(alpha = if (c.isDark) 0.04f else 0.20f)
+                            )
+                        ),
+                        RoundedCornerShape(28.dp)
                     )
+                    .padding(horizontal = 8.dp, vertical = 8.dp),
+                verticalAlignment = Alignment.Bottom,
+                horizontalArrangement = Arrangement.spacedBy(6.dp)
+            ) {
+                IconButton(onClick = { startVoiceInput() }, modifier = Modifier.padding(bottom = 2.dp)) {
+                    Icon(Icons.Default.Mic, contentDescription = "Voice input", tint = c.accentCyan, modifier = Modifier.size(20.dp))
+                }
+                OutlinedTextField(
+                    value = prompt,
+                    onValueChange = { prompt = it },
+                    modifier = Modifier.weight(1f),
+                    placeholder = { Text("Message your PC…", color = c.textMuted, fontSize = 13.sp) },
+                    maxLines = 5,
+                    shape = RoundedCornerShape(22.dp),
+                    colors = OutlinedTextFieldDefaults.colors(
+                        focusedBorderColor   = c.accentCyan,
+                        unfocusedBorderColor = Color.Transparent,
+                        unfocusedContainerColor = Color.Transparent,
+                        focusedContainerColor = Color.Transparent,
+                        focusedTextColor     = c.textPrimary,
+                        unfocusedTextColor   = c.textPrimary,
+                        cursorColor          = c.accentCyan
+                    )
+                )
+                val canSend = prompt.isNotBlank() && !sending
+                Box(
+                    modifier = Modifier
+                        .size(46.dp)
+                        .clip(CircleShape)
+                        .background(if (canSend) c.accentCyan else c.textMuted.copy(alpha = 0.15f))
+                        .then(if (canSend) Modifier.clickable { submit() } else Modifier),
+                    contentAlignment = Alignment.Center
+                ) {
+                    if (sending) {
+                        CircularProgressIndicator(modifier = Modifier.size(18.dp), color = c.bgDeep, strokeWidth = 2.dp)
+                    } else {
+                        Icon(
+                            Icons.AutoMirrored.Filled.Send,
+                            contentDescription = "Send",
+                            tint = if (canSend) c.bgDeep else c.textMuted,
+                            modifier = Modifier.size(18.dp)
+                        )
+                    }
                 }
             }
+        }
+    }
+
+        FloatingHeaderBar(
+            modifier = Modifier.align(Alignment.TopCenter),
+            onHeightMeasured = { headerHeight = it }
+        ) {
+            // Nav row - back arrow to the Sessions list, project name, agent toggle,
+            // settings icon.
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(4.dp)
+            ) {
+                IconButton(onClick = onBack, modifier = Modifier.size(36.dp)) {
+                    Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Back to Sessions", tint = c.textPrimary)
+                }
+                Text(
+                    project.label,
+                    fontWeight = FontWeight.Bold, fontSize = 16.sp, color = c.textPrimary,
+                    maxLines = 1, overflow = TextOverflow.Ellipsis,
+                    modifier = Modifier.weight(1f)
+                )
+                // Per-message agent toggle - each send uses whichever is currently picked,
+                // and every project keeps independent Claude/Codex/OpenCode chat + resumable
+                // threads (ProjectSessions/CodexProjectSessions/OpenCodeProjectSessions on
+                // the server), so cycling this doesn't lose or mix up any conversation.
+                Row(
+                    modifier = Modifier
+                        .clip(RoundedCornerShape(50))
+                        .background(c.bgCardAlt)
+                        .clickable {
+                            selectedAgent = when (selectedAgent) {
+                                "claude"   -> "codex"
+                                "codex"    -> "opencode"
+                                else       -> "claude"
+                            }
+                            AppPrefs.setLastAgent(ctx, selectedAgent)
+                        }
+                        .padding(horizontal = 10.dp, vertical = 5.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(4.dp)
+                ) {
+                    Icon(Icons.Default.SmartToy, contentDescription = null, tint = c.accentCyan, modifier = Modifier.size(13.dp))
+                    Text(
+                        agentLabel(selectedAgent),
+                        color = c.textPrimary, fontSize = 11.sp, maxLines = 1
+                    )
+                }
+                // Model/effort settings, all 3 agents - permission-mode within the sheet is
+                // Claude-only (see SettingsSheet.kt).
+                IconButton(onClick = { showSettingsSheet = true }, modifier = Modifier.size(36.dp)) {
+                    Icon(Icons.Default.Tune, contentDescription = "Session settings", tint = c.textMuted, modifier = Modifier.size(18.dp))
+                }
+            }
+
+            TokenUsageRow(tokenUsage)
         }
     }
 
@@ -848,12 +901,24 @@ private fun ActionChips(ctx: Context, action: PendingAction) {
     val scope = rememberCoroutineScope()
 
     when (action.type) {
+        // Mirrors the notification's own 3 quick actions exactly (Allow once/Always allow
+        // project/Deny) - the full-screen ApprovalActivity has 2 more (always-allow
+        // globally, deny-with-reason), but those live behind its "More options" section,
+        // not on the notification, so they're left out here too for parity.
         "approval_request" -> Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
             ActionChip("Allow", c.accentGreen) {
                 action.answered.value = "Allowed"
                 scope.launch {
                     DecisionActions.submitApprovalDecision(
                         ctx, action.respondUrl, action.sessionId, action.toolName, action.preview, "allow_once"
+                    )
+                }
+            }
+            ActionChip("Always allow", c.accentCyan) {
+                action.answered.value = "Always allowed"
+                scope.launch {
+                    DecisionActions.submitApprovalDecision(
+                        ctx, action.respondUrl, action.sessionId, action.toolName, action.preview, "always_allow_project"
                     )
                 }
             }
@@ -940,7 +1005,7 @@ private fun ActionChip(label: String, color: Color, onClick: () -> Unit) {
 @Composable
 private fun TokenUsageRow(usage: Map<String, TokenUsage>) {
     Row(
-        modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 2.dp),
+        modifier = Modifier.fillMaxWidth().padding(top = 6.dp),
         horizontalArrangement = Arrangement.spacedBy(14.dp)
     ) {
         for (agent in listOf("claude", "codex", "opencode")) {

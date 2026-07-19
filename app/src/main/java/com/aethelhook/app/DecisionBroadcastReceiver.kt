@@ -57,6 +57,7 @@ class DecisionBroadcastReceiver : BroadcastReceiver() {
         )
 
         if (notifId != -1) NotificationManagerCompat.from(context).cancel(notifId)
+        NotificationRegistry.forget(sessionId)
 
         // WebSocket is the primary path - works even when phone is the hotspot provider
         // (the socket is bound to the hotspot interface, bypassing cellular routing).

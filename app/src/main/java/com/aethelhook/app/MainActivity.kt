@@ -52,6 +52,7 @@ import androidx.compose.foundation.horizontalScroll
 import androidx.compose.ui.geometry.CornerRadius
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Size
+import androidx.compose.ui.layout.onGloballyPositioned
 import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
@@ -63,6 +64,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.window.Dialog
@@ -156,31 +158,44 @@ fun AethelHookApp(
         currentScreen = Screen.Dashboard
     }
 
+    // Sessions has its own two-level navigation (project list, then a per-project chat) -
+    // while a chat is open the user relies on the phone's own back gesture/button to leave
+    // it (SessionChatScreen registers its own BackHandler), so the floating nav pill is
+    // hidden there rather than floating over an already-cramped chat input row.
+    var sessionChatOpen by remember { mutableStateOf(false) }
+    val showNav = !(currentScreen == Screen.Session && sessionChatOpen)
+
     Box(modifier = Modifier.fillMaxSize().background(c.bgDeep)) {
         GlassBackground()
-        Scaffold(
-            containerColor = Color.Transparent,
-            bottomBar = {
-                FloatingPillNav(current = currentScreen, onSelect = { currentScreen = it })
+
+        // No Scaffold: bottomBar there reserves its own layout region and pads every
+        // screen's content away from behind it - a real "block/section", not a floating
+        // overlay. Screens now render full-bleed and each carries its own bottom content
+        // padding wide enough to clear the pill, so it visually floats over the tail of
+        // the content instead of content stopping short of it.
+        AnimatedContent(
+            targetState = currentScreen,
+            modifier = Modifier.fillMaxSize(),
+            transitionSpec = {
+                fadeIn(tween(240)) + slideInVertically { 20 } togetherWith
+                fadeOut(tween(180)) + slideOutVertically { -20 }
+            },
+            label = "screen"
+        ) { screen ->
+            when (screen) {
+                Screen.Dashboard -> DashboardScreen(ctx, isDark, onToggleTheme)
+                Screen.Session   -> SessionScreen(ctx, onChatOpenChanged = { sessionChatOpen = it })
+                Screen.History   -> HistoryScreen(ctx)
+                Screen.Settings  -> SettingsScreen(ctx, isDark, onToggleTheme)
             }
-        ) { padding ->
-            Box(Modifier.padding(padding)) {
-                AnimatedContent(
-                    targetState = currentScreen,
-                    transitionSpec = {
-                        fadeIn(tween(240)) + slideInVertically { 20 } togetherWith
-                        fadeOut(tween(180)) + slideOutVertically { -20 }
-                    },
-                    label = "screen"
-                ) { screen ->
-                    when (screen) {
-                        Screen.Dashboard -> DashboardScreen(ctx, isDark, onToggleTheme)
-                        Screen.Session   -> SessionScreen(ctx)
-                        Screen.History   -> HistoryScreen(ctx)
-                        Screen.Settings  -> SettingsScreen(ctx, isDark, onToggleTheme)
-                    }
-                }
-            }
+        }
+
+        if (showNav) {
+            FloatingPillNav(
+                current = currentScreen,
+                onSelect = { currentScreen = it },
+                modifier = Modifier.align(Alignment.BottomCenter)
+            )
         }
     }
 
@@ -234,7 +249,7 @@ fun GlassBackground() {
 // ──────────────────────────────────────────────────────────────────────────────
 
 @Composable
-fun FloatingPillNav(current: Screen, onSelect: (Screen) -> Unit) {
+fun FloatingPillNav(current: Screen, onSelect: (Screen) -> Unit, modifier: Modifier = Modifier) {
     val c = LocalAethelColors.current
     data class NavItem(val screen: Screen, val icon: ImageVector, val label: String)
     val items = listOf(
@@ -244,7 +259,7 @@ fun FloatingPillNav(current: Screen, onSelect: (Screen) -> Unit) {
         NavItem(Screen.Settings,  Icons.Default.Settings,      "Settings"),
     )
     Box(
-        modifier = Modifier
+        modifier = modifier
             .fillMaxWidth()
             .navigationBarsPadding()
             .padding(horizontal = 28.dp, vertical = 12.dp)
@@ -314,6 +329,69 @@ fun NavPillItem(selected: Boolean, icon: ImageVector, label: String, onClick: ()
         }
     }
 }
+
+// ──────────────────────────────────────────────────────────────────────────────
+// Floating top header - same glass-pill visual language as FloatingPillNav above,
+// pinned to the very top of the screen via statusBarsPadding (not pushed down by a
+// guessed content offset the way each screen used to hardcode `padding(top = 56.dp)`
+// inside its own scrollable Column, which made the header itself scroll away with the
+// content beneath it). Every screen now measures this bar's own rendered height and
+// feeds it back as that screen's content top-padding, so content starts right where the
+// header ends regardless of status bar height/font scale - no magic-number guessing.
+// ──────────────────────────────────────────────────────────────────────────────
+
+@Composable
+fun FloatingHeaderBar(
+    modifier: Modifier = Modifier,
+    onHeightMeasured: (Dp) -> Unit = {},
+    content: @Composable ColumnScope.() -> Unit
+) {
+    val c = LocalAethelColors.current
+    val density = androidx.compose.ui.platform.LocalDensity.current
+    // onGloballyPositioned must come BEFORE statusBarsPadding/padding in the chain (i.e.
+    // wrap them), not after - a modifier only measures what's nested inside it, so putting
+    // it after those two would report just the inner glass card's own height and silently
+    // drop the status-bar inset + outer padding from the total, undershooting every
+    // screen's content top-offset by exactly that amount. Confirmed live: content was
+    // rendering partly underneath/behind the header before this fix.
+    Box(
+        modifier = modifier
+            .fillMaxWidth()
+            .onGloballyPositioned { coords ->
+                onHeightMeasured(with(density) { coords.size.height.toDp() })
+            }
+            .statusBarsPadding()
+            .padding(start = 16.dp, top = 10.dp, end = 16.dp, bottom = 6.dp)
+    ) {
+        Box(
+            modifier = Modifier
+                .fillMaxWidth()
+                .clip(RoundedCornerShape(26.dp))
+                .background(if (c.isDark) Color.Black.copy(alpha = 0.55f) else Color.White.copy(alpha = 0.60f))
+                .border(
+                    1.dp,
+                    Brush.verticalGradient(
+                        colors = listOf(
+                            Color.White.copy(alpha = if (c.isDark) 0.22f else 0.80f),
+                            Color.White.copy(alpha = if (c.isDark) 0.04f else 0.20f)
+                        )
+                    ),
+                    RoundedCornerShape(26.dp)
+                )
+                .padding(horizontal = 14.dp, vertical = 10.dp)
+        ) {
+            Column(modifier = Modifier.fillMaxWidth(), content = content)
+        }
+    }
+}
+
+// Estimated clearance for the floating bottom nav pill (its own content height + the
+// margins/navigationBarsPadding FloatingPillNav applies around itself) - a fixed estimate
+// rather than a measured one, since the nav lives in a sibling composable at the
+// AethelHookApp root and threading its measured height down into every screen isn't
+// worth the wiring for what's a purely cosmetic "don't let content hide fully behind it"
+// bottom padding. Screens can visually tune this after checking it on a real device.
+val BOTTOM_NAV_CLEARANCE = 110.dp
 
 // ──────────────────────────────────────────────────────────────────────────────
 // Dashboard
@@ -387,47 +465,17 @@ fun DashboardScreen(ctx: Context, isDark: Boolean, onToggleTheme: () -> Unit) {
         }
     }
 
+    var headerHeight by remember { mutableStateOf(72.dp) }
+
+    Box(Modifier.fillMaxSize()) {
     Column(
         modifier = Modifier
             .fillMaxSize()
             .verticalScroll(rememberScrollState())
             .padding(horizontal = 20.dp)
-            .padding(top = 56.dp, bottom = 16.dp),
+            .padding(top = headerHeight + 8.dp, bottom = BOTTOM_NAV_CLEARANCE),
         verticalArrangement = Arrangement.spacedBy(14.dp)
     ) {
-        // Header
-        Row(verticalAlignment = Alignment.CenterVertically) {
-            val ctx = LocalContext.current
-            val iconBitmap = remember(ctx, isDark) {
-                val d = ContextCompat.getDrawable(ctx, R.mipmap.ic_launcher)!!
-                val bmp = android.graphics.Bitmap.createBitmap(176, 176, android.graphics.Bitmap.Config.ARGB_8888)
-                d.setBounds(0, 0, 176, 176)
-                d.draw(android.graphics.Canvas(bmp))
-                if (!isDark) recolorBlackBackgroundToWhite(bmp)
-                bmp.asImageBitmap()
-            }
-            Image(
-                bitmap = iconBitmap,
-                contentDescription = null,
-                modifier = Modifier
-                    .size(44.dp)
-                    .clip(RoundedCornerShape(14.dp))
-            )
-            Spacer(Modifier.width(12.dp))
-            Column(Modifier.weight(1f)) {
-                Text("ÆthelHook", fontWeight = FontWeight.Bold, fontSize = 22.sp, color = c.textPrimary)
-                Text("Agent Permission Gateway", fontSize = 12.sp, color = c.textSecondary)
-            }
-            IconButton(onClick = onToggleTheme) {
-                Icon(
-                    if (isDark) Icons.Default.DarkMode else Icons.Default.LightMode,
-                    contentDescription = "Toggle theme",
-                    tint = c.textSecondary,
-                    modifier = Modifier.size(22.dp)
-                )
-            }
-        }
-
         // Gateway status hero card
         LiquidGlassCard {
             Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
@@ -693,6 +741,44 @@ fun DashboardScreen(ctx: Context, isDark: Boolean, onToggleTheme: () -> Unit) {
         }
     }
 
+        FloatingHeaderBar(
+            modifier = Modifier.align(Alignment.TopCenter),
+            onHeightMeasured = { headerHeight = it }
+        ) {
+            Row(modifier = Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+                val headerCtx = LocalContext.current
+                val iconBitmap = remember(headerCtx, isDark) {
+                    val d = ContextCompat.getDrawable(headerCtx, R.mipmap.ic_launcher)!!
+                    val bmp = android.graphics.Bitmap.createBitmap(176, 176, android.graphics.Bitmap.Config.ARGB_8888)
+                    d.setBounds(0, 0, 176, 176)
+                    d.draw(android.graphics.Canvas(bmp))
+                    if (!isDark) recolorBlackBackgroundToWhite(bmp)
+                    bmp.asImageBitmap()
+                }
+                Image(
+                    bitmap = iconBitmap,
+                    contentDescription = null,
+                    modifier = Modifier
+                        .size(36.dp)
+                        .clip(RoundedCornerShape(12.dp))
+                )
+                Spacer(Modifier.width(10.dp))
+                Column(Modifier.weight(1f)) {
+                    Text("ÆthelHook", fontWeight = FontWeight.Bold, fontSize = 18.sp, color = c.textPrimary)
+                    Text("Agent Permission Gateway", fontSize = 11.sp, color = c.textSecondary)
+                }
+                IconButton(onClick = onToggleTheme) {
+                    Icon(
+                        if (isDark) Icons.Default.DarkMode else Icons.Default.LightMode,
+                        contentDescription = "Toggle theme",
+                        tint = c.textSecondary,
+                        modifier = Modifier.size(20.dp)
+                    )
+                }
+            }
+        }
+    }
+
     // Stats detail popup - renders in its own window above everything
     if (statsPopupFilter != null) {
         StatsDetailPopup(
@@ -720,23 +806,9 @@ fun HistoryScreen(ctx: Context) {
         history = AppPrefs.getHistory(ctx)
     }
 
-    Column(modifier = Modifier.fillMaxSize()) {
-        // Header
-        Row(
-            modifier = Modifier
-                .fillMaxWidth()
-                .padding(horizontal = 20.dp)
-                .padding(top = 56.dp, bottom = 8.dp),
-            verticalAlignment = Alignment.CenterVertically
-        ) {
-            Text("History", fontWeight = FontWeight.Bold, fontSize = 22.sp, color = c.textPrimary, modifier = Modifier.weight(1f))
-            if (history.isNotEmpty()) {
-                TextButton(onClick = { AppPrefs.clearHistory(ctx); history = emptyList() }) {
-                    Text("Clear", color = c.accentRed, fontSize = 13.sp)
-                }
-            }
-        }
+    var headerHeight by remember { mutableStateOf(72.dp) }
 
+    Box(Modifier.fillMaxSize()) {
         if (history.isEmpty()) {
             Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
                 Column(horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.spacedBy(10.dp)) {
@@ -755,11 +827,25 @@ fun HistoryScreen(ctx: Context) {
             }
         } else {
             LazyColumn(
-                contentPadding = PaddingValues(horizontal = 20.dp, vertical = 4.dp),
+                contentPadding = PaddingValues(start = 20.dp, end = 20.dp, top = headerHeight + 8.dp, bottom = BOTTOM_NAV_CLEARANCE),
                 verticalArrangement = Arrangement.spacedBy(10.dp)
             ) {
                 items(history) { record -> HistoryCard(record = record, fmt = fmt) }
                 item { Spacer(Modifier.height(8.dp)) }
+            }
+        }
+
+        FloatingHeaderBar(
+            modifier = Modifier.align(Alignment.TopCenter),
+            onHeightMeasured = { headerHeight = it }
+        ) {
+            Row(modifier = Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+                Text("History", fontWeight = FontWeight.Bold, fontSize = 18.sp, color = c.textPrimary, modifier = Modifier.weight(1f))
+                if (history.isNotEmpty()) {
+                    TextButton(onClick = { AppPrefs.clearHistory(ctx); history = emptyList() }) {
+                        Text("Clear", color = c.accentRed, fontSize = 13.sp)
+                    }
+                }
             }
         }
     }
@@ -939,16 +1025,17 @@ fun SettingsScreen(ctx: Context, isDark: Boolean, onToggleTheme: () -> Unit) {
         }
     }
 
+    var headerHeight by remember { mutableStateOf(72.dp) }
+
+    Box(Modifier.fillMaxSize()) {
     Column(
         modifier = Modifier
             .fillMaxSize()
             .verticalScroll(rememberScrollState())
             .padding(horizontal = 20.dp)
-            .padding(top = 56.dp, bottom = 16.dp),
+            .padding(top = headerHeight + 8.dp, bottom = BOTTOM_NAV_CLEARANCE),
         verticalArrangement = Arrangement.spacedBy(14.dp)
     ) {
-        Text("Settings", fontWeight = FontWeight.Bold, fontSize = 22.sp, color = c.textPrimary)
-
         // Appearance card
         LiquidGlassCard {
             Column(verticalArrangement = Arrangement.spacedBy(14.dp)) {
@@ -1134,6 +1221,14 @@ fun SettingsScreen(ctx: Context, isDark: Boolean, onToggleTheme: () -> Unit) {
                     modifier = Modifier.fillMaxWidth().padding(top = 4.dp)
                 )
             }
+        }
+    }
+
+        FloatingHeaderBar(
+            modifier = Modifier.align(Alignment.TopCenter),
+            onHeightMeasured = { headerHeight = it }
+        ) {
+            Text("Settings", fontWeight = FontWeight.Bold, fontSize = 18.sp, color = c.textPrimary)
         }
     }
 }
