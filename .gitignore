@@ -30,6 +30,13 @@ keystore.properties
 /AethelHook-Setup.exe
 /AethelHook.API/dist/
 
+# Android app - kept local-only, not part of the open-source repo
+/app/
+
+# Python cache (Devin CLI hook helpers)
+__pycache__/
+*.pyc
+
 # Android build output
 /app/build/
 
