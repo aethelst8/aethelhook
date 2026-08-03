@@ -48,6 +48,17 @@ Source: "dist\hooks\codex\on_approval_request.ps1"; DestDir: "{commonappdata}\Ae
 Source: "dist\hooks\codex\on_agent_done.ps1"; DestDir: "{commonappdata}\AethelHook\hooks\codex"; Flags: ignoreversion
 Source: "dist\hooks\codex\notify_async.ps1"; DestDir: "{commonappdata}\AethelHook\hooks\codex"; Flags: ignoreversion
 Source: "dist\hooks\opencode\aethelhook-plugin.js"; DestDir: "{commonappdata}\AethelHook\hooks\opencode"; Flags: ignoreversion
+Source: "dist\hooks\geminicli\on_before_tool.ps1"; DestDir: "{commonappdata}\AethelHook\hooks\geminicli"; Flags: ignoreversion
+Source: "dist\hooks\geminicli\on_after_tool.ps1"; DestDir: "{commonappdata}\AethelHook\hooks\geminicli"; Flags: ignoreversion
+Source: "dist\hooks\geminicli\on_after_agent.ps1"; DestDir: "{commonappdata}\AethelHook\hooks\geminicli"; Flags: ignoreversion
+Source: "dist\hooks\geminicli\notify_async.ps1"; DestDir: "{commonappdata}\AethelHook\hooks\geminicli"; Flags: ignoreversion
+Source: "dist\hooks\copilot\on_permission_request.ps1"; DestDir: "{commonappdata}\AethelHook\hooks\copilot"; Flags: ignoreversion
+Source: "dist\hooks\copilot\on_agent_stop.ps1"; DestDir: "{commonappdata}\AethelHook\hooks\copilot"; Flags: ignoreversion
+Source: "dist\hooks\copilot\notify_async.ps1"; DestDir: "{commonappdata}\AethelHook\hooks\copilot"; Flags: ignoreversion
+Source: "dist\hooks\devincli\on_pre_tool_use.ps1"; DestDir: "{commonappdata}\AethelHook\hooks\devincli"; Flags: ignoreversion
+Source: "dist\hooks\devincli\on_stop.ps1"; DestDir: "{commonappdata}\AethelHook\hooks\devincli"; Flags: ignoreversion
+Source: "dist\hooks\devincli\extract_summary.py"; DestDir: "{commonappdata}\AethelHook\hooks\devincli"; Flags: ignoreversion
+Source: "dist\hooks\devincli\find_latest_session.py"; DestDir: "{commonappdata}\AethelHook\hooks\devincli"; Flags: ignoreversion
 Source: "dist\install_hooks.ps1"; DestDir: "{tmp}"; Flags: ignoreversion deleteafterinstall
 Source: "dist\uninstall_hooks.ps1"; DestDir: "{app}"; Flags: ignoreversion
 Source: "dist\aethelhook.ico"; DestDir: "{app}"; Flags: ignoreversion

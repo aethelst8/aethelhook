@@ -27,6 +27,20 @@ try {
     }
 } catch { Log "stdin read failed: $_" }
 
+# Devin CLI imports Claude Code's hooks from .claude/settings.json by default
+# (read_config_from.claude, confirmed live 2026-07-22 via hook_debug.log - a real
+# interactive Devin session's own Stop event landed here with a word-pair session_id
+# like "immediate-cork" and no transcript_path at all) - every genuine Claude Code Stop
+# event always carries transcript_path, so its total absence means this fired from a
+# different tool's own Stop-equivalent event, not a real Claude Code turn. Skip
+# entirely rather than sending a blank "Claude Code finished" notification that's both
+# wrong (mislabels whichever tool actually finished) and useless (no summary text
+# exists to extract - the payload shape isn't Claude's to begin with).
+if (-not $transcriptPath) {
+    Log "No transcript_path in stdin - not a real Claude Code Stop event, skipping notification"
+    exit 0
+}
+
 # --- Extract the last assistant text message from the transcript ---
 $summary = ""
 if ($transcriptPath -and (Test-Path $transcriptPath)) {

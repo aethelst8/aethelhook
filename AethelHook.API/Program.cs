@@ -252,6 +252,9 @@ app.Map("/ws", async context =>
 bool IsGatewayActive = true;
 bool IsCodexGatewayActive = true;
 bool IsOpenCodeGatewayActive = true;
+bool IsGeminiGatewayActive = true;
+bool IsCopilotGatewayActive = true;
+bool IsDevinCliGatewayActive = true;
 
 // Phase 2 (Session Access): the most recent working directory seen in any hook
 // event - the DEFAULT cwd for a brand-new phone conversation when the phone hasn't
@@ -289,6 +292,19 @@ var CodexProjectSessions = new ConcurrentDictionary<string, string>(StringCompar
 // is a "sessionID" (its own namespace, distinct from Claude's session_id and Codex's
 // thread_id), tracked per directory just like the other two agents.
 var OpenCodeProjectSessions = new ConcurrentDictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+
+// Same idea again, for headless `gemini -p` calls - Gemini CLI's resumable identifier
+// is its own "session_id" (a distinct namespace from the other three, even though the
+// field name collides with Claude's), passed back via --session-id on the next run.
+var GeminiProjectSessions = new ConcurrentDictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+
+// Same idea again, for headless `devin -p` calls - Devin CLI's own resumable
+// identifier is a memorable word-pair "session id" (its own namespace). Unlike the
+// other four agents, -p mode's stdout is plain text with no machine-readable session
+// id anywhere in it, so this is captured after each run by querying Devin's own
+// sessions.db directly (via find_latest_session.py) rather than parsing output.
+var DevinCliProjectSessions = new ConcurrentDictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+
 
 // Every distinct working directory any hook event has reported, with when it was
 // last seen - lets the phone list "known projects" to explicitly pick from instead
@@ -429,6 +445,8 @@ void SaveProjectState()
             projectSessions      = ProjectSessions.ToDictionary(kv => kv.Key, kv => kv.Value, StringComparer.OrdinalIgnoreCase),
             codexProjectSessions = CodexProjectSessions.ToDictionary(kv => kv.Key, kv => kv.Value, StringComparer.OrdinalIgnoreCase),
             openCodeProjectSessions = OpenCodeProjectSessions.ToDictionary(kv => kv.Key, kv => kv.Value, StringComparer.OrdinalIgnoreCase),
+            geminiProjectSessions = GeminiProjectSessions.ToDictionary(kv => kv.Key, kv => kv.Value, StringComparer.OrdinalIgnoreCase),
+            devinCliProjectSessions = DevinCliProjectSessions.ToDictionary(kv => kv.Key, kv => kv.Value, StringComparer.OrdinalIgnoreCase),
             knownProjects        = KnownProjects.ToDictionary(kv => kv.Key, kv => kv.Value, StringComparer.OrdinalIgnoreCase),
             projectAgentSettings = ProjectAgentSettings.ToDictionary(
                 kv => kv.Key,
@@ -477,6 +495,16 @@ void LoadProjectState()
                 if (prop.Value.ValueKind == JsonValueKind.String)
                     OpenCodeProjectSessions[prop.Name] = prop.Value.GetString()!;
 
+        if (root.TryGetProperty("geminiProjectSessions", out var gps) && gps.ValueKind == JsonValueKind.Object)
+            foreach (var prop in gps.EnumerateObject())
+                if (prop.Value.ValueKind == JsonValueKind.String)
+                    GeminiProjectSessions[prop.Name] = prop.Value.GetString()!;
+
+        if (root.TryGetProperty("devinCliProjectSessions", out var dcps) && dcps.ValueKind == JsonValueKind.Object)
+            foreach (var prop in dcps.EnumerateObject())
+                if (prop.Value.ValueKind == JsonValueKind.String)
+                    DevinCliProjectSessions[prop.Name] = prop.Value.GetString()!;
+
         if (root.TryGetProperty("knownProjects", out var kp) && kp.ValueKind == JsonValueKind.Object)
             foreach (var prop in kp.EnumerateObject())
                 if (prop.Value.TryGetDateTime(out var seen))
@@ -510,7 +538,7 @@ void LoadProjectState()
                 TokenUsageByProjectAgent[prop.Name] = new TokenUsageInfo(agentVal, tokensUsed, contextWindow, modelVal, updatedAt);
             }
 
-        Console.WriteLine($"[ProjectState] Restored {KnownProjects.Count} known project(s), {ProjectSessions.Count} Claude session(s), {CodexProjectSessions.Count} Codex thread(s), {OpenCodeProjectSessions.Count} OpenCode session(s) from disk");
+        Console.WriteLine($"[ProjectState] Restored {KnownProjects.Count} known project(s), {ProjectSessions.Count} Claude session(s), {CodexProjectSessions.Count} Codex thread(s), {OpenCodeProjectSessions.Count} OpenCode session(s), {GeminiProjectSessions.Count} Gemini session(s), {DevinCliProjectSessions.Count} Devin CLI session(s) from disk");
     }
     catch (Exception ex) { Console.WriteLine($"[ProjectState] Load failed: {ex.Message}"); }
 }
@@ -595,6 +623,78 @@ app.MapPost("/opencode/gateway/deactivate", (HttpContext ctx) =>
     IsOpenCodeGatewayActive = false;
     RemoveOpenCodeHooks();
     Console.WriteLine("[OpenCode Gateway] Deactivated - plugin unregistered, native OpenCode approvals active");
+    return Results.Ok(new { status = "deactivated" });
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// POST /gemini/gateway/activate  ─  restore Gemini CLI settings.json hooks + mark active
+// ─────────────────────────────────────────────────────────────────────────────
+app.MapPost("/gemini/gateway/activate", (HttpContext ctx) =>
+{
+    if (!ValidateToken(ctx)) return Results.Unauthorized();
+    IsGeminiGatewayActive = true;
+    RestoreGeminiHooks();
+    Console.WriteLine("[Gemini Gateway] Activated - hooks restored in settings.json");
+    return Results.Ok(new { status = "activated" });
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// POST /gemini/gateway/deactivate  ─  remove Gemini CLI hooks + mark inactive
+// ─────────────────────────────────────────────────────────────────────────────
+app.MapPost("/gemini/gateway/deactivate", (HttpContext ctx) =>
+{
+    if (!ValidateToken(ctx)) return Results.Unauthorized();
+    IsGeminiGatewayActive = false;
+    RemoveGeminiHooks();
+    Console.WriteLine("[Gemini Gateway] Deactivated - hooks removed, native Gemini CLI approvals active");
+    return Results.Ok(new { status = "deactivated" });
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// POST /copilot/gateway/activate  ─  restore Copilot CLI hooks.json + mark active
+// ─────────────────────────────────────────────────────────────────────────────
+app.MapPost("/copilot/gateway/activate", (HttpContext ctx) =>
+{
+    if (!ValidateToken(ctx)) return Results.Unauthorized();
+    IsCopilotGatewayActive = true;
+    RestoreCopilotHooks();
+    Console.WriteLine("[Copilot Gateway] Activated - hooks.json restored");
+    return Results.Ok(new { status = "activated" });
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// POST /copilot/gateway/deactivate  ─  remove Copilot CLI hooks + mark inactive
+// ─────────────────────────────────────────────────────────────────────────────
+app.MapPost("/copilot/gateway/deactivate", (HttpContext ctx) =>
+{
+    if (!ValidateToken(ctx)) return Results.Unauthorized();
+    IsCopilotGatewayActive = false;
+    RemoveCopilotHooks();
+    Console.WriteLine("[Copilot Gateway] Deactivated - hooks removed, native Copilot CLI approvals active");
+    return Results.Ok(new { status = "deactivated" });
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// POST /devincli/gateway/activate  ─  restore Devin CLI config.json hooks + mark active
+// ─────────────────────────────────────────────────────────────────────────────
+app.MapPost("/devincli/gateway/activate", (HttpContext ctx) =>
+{
+    if (!ValidateToken(ctx)) return Results.Unauthorized();
+    IsDevinCliGatewayActive = true;
+    RestoreDevinHooks();
+    Console.WriteLine("[Devin CLI Gateway] Activated - hooks restored in config.json");
+    return Results.Ok(new { status = "activated" });
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// POST /devincli/gateway/deactivate  ─  remove Devin CLI hooks + mark inactive
+// ─────────────────────────────────────────────────────────────────────────────
+app.MapPost("/devincli/gateway/deactivate", (HttpContext ctx) =>
+{
+    if (!ValidateToken(ctx)) return Results.Unauthorized();
+    IsDevinCliGatewayActive = false;
+    RemoveDevinHooks();
+    Console.WriteLine("[Devin CLI Gateway] Deactivated - hooks removed, native Devin CLI approvals active");
     return Results.Ok(new { status = "deactivated" });
 });
 
@@ -784,7 +884,7 @@ app.MapPost("/hook/session-update", async (HttpContext ctx, SessionUpdateRequest
     }
 
     var wsSent = await BroadcastSessionEventAsync(
-        "session_update", request.Message ?? "Still working...", request.Detail ?? "", request.ToolName ?? "", request.Cwd ?? "");
+        "session_update", request.Message ?? "Still working...", request.Detail ?? "", request.ToolName ?? "", request.Cwd ?? "", request.Agent ?? "claude");
     return Results.Ok(new { success = true, ws_delivered = wsSent });
 });
 
@@ -940,7 +1040,7 @@ app.MapGet("/hook/token-usage", (HttpContext ctx, string dir) =>
     if (!ValidateToken(ctx)) return Results.Unauthorized();
     if (string.IsNullOrWhiteSpace(dir)) return Results.BadRequest(new { error = "dir is required" });
 
-    var result = new[] { "claude", "codex", "opencode" }
+    var result = new[] { "claude", "codex", "opencode", "gemini" }
         .Select(a => TokenUsageByProjectAgent.TryGetValue(AgentSettingsKey(dir, a), out var info) ? info : null)
         .Where(info => info != null)
         .Select(info => new { agent = info!.Agent, tokens_used = info.TokensUsed, context_window = info.ContextWindow, model = info.Model })
@@ -992,7 +1092,10 @@ app.MapPost("/hook/send-prompt", async (HttpContext ctx, SendPromptRequest reque
 
     var useCodex = string.Equals(request.Agent, "codex", StringComparison.OrdinalIgnoreCase);
     var useOpenCode = string.Equals(request.Agent, "opencode", StringComparison.OrdinalIgnoreCase);
-    var agentForSettings = useCodex ? "codex" : useOpenCode ? "opencode" : "claude";
+    var useGemini = string.Equals(request.Agent, "gemini", StringComparison.OrdinalIgnoreCase);
+    var useCopilot = string.Equals(request.Agent, "copilot", StringComparison.OrdinalIgnoreCase);
+    var useDevinCli = string.Equals(request.Agent, "devincli", StringComparison.OrdinalIgnoreCase);
+    var agentForSettings = useCodex ? "codex" : useOpenCode ? "opencode" : useGemini ? "gemini" : useCopilot ? "copilot" : useDevinCli ? "devincli" : "claude";
 
     // Worktree isolation, identical mechanism for all 3 agents (see EnsureWorktreeAsync's
     // own doc comment). The resumable-session dictionaries (ProjectSessions/
@@ -1045,6 +1148,60 @@ app.MapPost("/hook/send-prompt", async (HttpContext ctx, SendPromptRequest reque
         }
         _ = Task.Run(() => RunHeadlessOpenCodePromptAsync(openCodePath, openCodeProfile, effectiveWorkDir, request.Prompt, request.Model, request.Effort));
         Console.WriteLine($"[SendPrompt] Queued headless OpenCode run in {effectiveWorkDir}");
+        return Results.Ok(new { success = true, queued = true });
+    }
+
+    if (useGemini)
+    {
+        var (geminiNodePath, geminiScriptPath, geminiProfile) = FindGeminiCliInfo();
+        if (geminiNodePath == null || geminiScriptPath == null)
+        {
+            Console.WriteLine("[SendPrompt] gemini-cli not found - cannot run headless prompt");
+            return Results.Problem("Gemini CLI not found on this machine.");
+        }
+        // No --effort equivalent confirmed on this CLI (`gemini --help` has no reasoning-
+        // effort flag) - only model is applied to the actual run; still stored here in
+        // case the phone's settings sheet sends it, so it isn't silently discarded if a
+        // future Gemini CLI version adds a matching flag.
+        if (request.Model != null || request.Effort != null)
+        {
+            ProjectAgentSettings[AgentSettingsKey(cwd, "gemini")] = new SessionSettings(request.Model, request.Effort, null);
+            _ = Task.Run(SaveProjectState);
+        }
+        _ = Task.Run(() => RunHeadlessGeminiPromptAsync(geminiNodePath, geminiScriptPath, geminiProfile, effectiveWorkDir, request.Prompt, request.Model));
+        Console.WriteLine($"[SendPrompt] Queued headless Gemini run in {effectiveWorkDir}");
+        return Results.Ok(new { success = true, queued = true });
+    }
+
+    if (useCopilot)
+    {
+        // Copilot CLI is deliberately approval-gate-only (2026-07-22) - its default
+        // OAuth login lives in Windows Credential Manager, unreachable to a
+        // LocalSystem-spawned process, so headless Session Access would require
+        // AethelHook to store and rotate its own PAT indefinitely. Rejected explicitly
+        // here rather than silently falling through to Claude's own headless path.
+        Console.WriteLine("[SendPrompt] Rejected send-prompt for copilot - Session Access not supported for this agent");
+        return Results.Problem("GitHub Copilot CLI only supports the approval gate, not phone-initiated prompts.");
+    }
+
+    if (useDevinCli)
+    {
+        var (devinCliPath, devinCliProfile) = FindDevinCliInfo();
+        if (devinCliPath == null)
+        {
+            Console.WriteLine("[SendPrompt] devin.exe (standalone CLI) not found - cannot run headless prompt");
+            return Results.Problem("Devin CLI (standalone terminal install) not found on this machine.");
+        }
+        // No --effort equivalent on this CLI (`devin --help` has no reasoning-effort
+        // flag), same as Gemini - still stored here in case a future settings sheet
+        // change sends it, so it isn't silently discarded.
+        if (request.Model != null || request.Effort != null)
+        {
+            ProjectAgentSettings[AgentSettingsKey(cwd, "devincli")] = new SessionSettings(request.Model, request.Effort, null);
+            _ = Task.Run(SaveProjectState);
+        }
+        _ = Task.Run(() => RunHeadlessDevinCliPromptAsync(devinCliPath, devinCliProfile, effectiveWorkDir, request.Prompt, request.Model));
+        Console.WriteLine($"[SendPrompt] Queued headless Devin CLI run in {effectiveWorkDir}");
         return Results.Ok(new { success = true, queued = true });
     }
 
@@ -1706,6 +1863,408 @@ app.MapPost("/hook/send-prompt", async (HttpContext ctx, SendPromptRequest reque
             PromptRunLock.Release();
         }
     }
+
+    // Gemini CLI counterpart to the three runners above. Architecturally different from
+    // all three: `-o json` prints ONE pretty-printed JSON object at the very end of
+    // stdout (confirmed live 2026-07-21), not a newline-delimited stream of JSON events
+    // like Codex's/OpenCode's `--json`/`--format json` - so this reads stdout to
+    // completion rather than parsing line-by-line during the loop, and there's no
+    // mid-turn "session_update" preview to broadcast the way the other two get from
+    // their streaming formats. Confirmed live even a hard failure (quota exceeded, auth
+    // error) still ends with a parseable {"session_id":...,"error":{...}} object, so the
+    // same single-parse-at-the-end approach covers both outcomes.
+    //
+    // --approval-mode yolo is required for headless use, same reasoning as Codex's
+    // approval_policy="never" (gotcha #16) - without it, Gemini CLI silently omits any
+    // tool requiring interactive approval from the toolset entirely rather than erroring,
+    // since headless has no way to satisfy an approval prompt. Confirmed live this does
+    // NOT bypass AethelHook's own BeforeTool hook - a deny still genuinely blocks the
+    // tool call with YOLO active, unlike Antigravity's native-dialog bypass.
+    //
+    // Resume live-verified this session (2026-07-22), despite `gemini --help` only
+    // documenting "latest" or a numeric index for --resume: an arbitrary session_id -
+    // either one this runner captured from a prior run's own JSON response, or even a
+    // caller-chosen UUID passed via --session-id - resumes correctly (confirmed via a
+    // real word-recall test both ways). Same explicit-ID pattern as Codex's thread_id/
+    // OpenCode's sessionID, not the "latest" ambiguity originally assumed - no risk of
+    // grabbing an unrelated directory's or the user's own interactive session.
+    async Task RunHeadlessGeminiPromptAsync(string nodeExePath, string geminiScriptPath, string? profileDir, string workDir, string prompt, string? model = null)
+    {
+        await PromptRunLock.WaitAsync();
+        try
+        {
+            Console.WriteLine($"[SendPrompt] Starting headless Gemini run in {workDir}");
+
+            TrustGeminiFolder(workDir);
+
+            var resumeId = GeminiProjectSessions.TryGetValue(workDir, out var existingSessionId) ? existingSessionId : null;
+
+            var psi = new ProcessStartInfo
+            {
+                FileName               = nodeExePath,
+                WorkingDirectory       = workDir,
+                RedirectStandardOutput = true,
+                RedirectStandardError  = true,
+                UseShellExecute        = false,
+                CreateNoWindow         = true,
+                StandardOutputEncoding = Encoding.UTF8
+            };
+
+            psi.ArgumentList.Add(geminiScriptPath);
+            if (!string.IsNullOrEmpty(resumeId))
+            {
+                psi.ArgumentList.Add("--resume");
+                psi.ArgumentList.Add(resumeId);
+            }
+            psi.ArgumentList.Add("-p");
+            psi.ArgumentList.Add(prompt);
+            psi.ArgumentList.Add("-o");
+            psi.ArgumentList.Add("json");
+            psi.ArgumentList.Add("--approval-mode");
+            psi.ArgumentList.Add("yolo");
+            if (!string.IsNullOrEmpty(model))
+            {
+                psi.ArgumentList.Add("-m");
+                psi.ArgumentList.Add(model);
+            }
+
+            // Same LocalSystem-profile override as the other three runners (see their own
+            // comments above) - GEMINI_API_KEY is deliberately NOT set here. If the real
+            // user has persisted one in <profile>\.gemini\.env (Gemini CLI's own
+            // documented persistence mechanism), setting HOME/USERPROFILE to that profile
+            // is enough for gemini-cli to auto-load it itself - no separate secret storage
+            // needed in AethelHook.
+            if (!string.IsNullOrEmpty(profileDir))
+            {
+                psi.EnvironmentVariables["USERPROFILE"]  = profileDir;
+                psi.EnvironmentVariables["HOME"]         = profileDir;
+                psi.EnvironmentVariables["APPDATA"]      = Path.Combine(profileDir, "AppData", "Roaming");
+                psi.EnvironmentVariables["LOCALAPPDATA"] = Path.Combine(profileDir, "AppData", "Local");
+                psi.EnvironmentVariables["HOMEDRIVE"]    = Path.GetPathRoot(profileDir)?.TrimEnd('\\');
+                psi.EnvironmentVariables["HOMEPATH"]     = profileDir.Substring(Path.GetPathRoot(profileDir)?.TrimEnd('\\')?.Length ?? 0);
+            }
+
+            using var process = new Process { StartInfo = psi };
+            process.Start();
+
+            var stdoutTask = process.StandardOutput.ReadToEndAsync();
+            var stderrTask = process.StandardError.ReadToEndAsync();
+            await process.WaitForExitAsync();
+            var stdout = await stdoutTask;
+            var stderr = await stderrTask;
+
+            string? sessionId  = null;
+            string? resultText = null;
+            var isError   = false;
+            var gotResult = false;
+            long tokensUsed = 0;
+
+            // The JSON object is pretty-printed (multi-line), always starting with a
+            // line that's exactly "{" - confirmed live across every test this session,
+            // both success and failure outcomes - so find the LAST such line rather than
+            // assuming the whole of stdout is clean JSON (diagnostic banners like "YOLO
+            // mode is enabled..." can precede it).
+            var lines = stdout.Replace("\r\n", "\n").Split('\n');
+            var jsonStart = -1;
+            for (var i = lines.Length - 1; i >= 0; i--)
+            {
+                if (lines[i].Trim() == "{") { jsonStart = i; break; }
+            }
+
+            if (jsonStart >= 0)
+            {
+                var jsonText = string.Join("\n", lines.Skip(jsonStart));
+                try
+                {
+                    using var doc = JsonDocument.Parse(jsonText);
+                    var root = doc.RootElement;
+                    gotResult = true;
+
+                    if (root.TryGetProperty("session_id", out var sid) && sid.GetString() is { } sidVal)
+                        sessionId = sidVal;
+
+                    if (root.TryGetProperty("error", out var errEl))
+                    {
+                        isError = true;
+                        resultText = errEl.TryGetProperty("message", out var em) ? em.GetString() : "Unknown error";
+                    }
+                    else if (root.TryGetProperty("response", out var respEl))
+                    {
+                        resultText = respEl.GetString() ?? "";
+                    }
+
+                    // Sum every model's tokens.total - a turn can involve more than one
+                    // model (confirmed live: a "utility_router" role model alongside the
+                    // "main" role model for a single prompt), so no single model's figure
+                    // alone represents the turn's real context usage.
+                    if (root.TryGetProperty("stats", out var stats) &&
+                        stats.TryGetProperty("models", out var modelsEl) &&
+                        modelsEl.ValueKind == JsonValueKind.Object)
+                    {
+                        foreach (var modelProp in modelsEl.EnumerateObject())
+                        {
+                            if (modelProp.Value.TryGetProperty("tokens", out var tokEl) &&
+                                tokEl.TryGetProperty("total", out var totEl) &&
+                                totEl.TryGetInt64(out var totVal))
+                            {
+                                tokensUsed += totVal;
+                            }
+                        }
+                    }
+                }
+                catch (JsonException ex)
+                {
+                    Console.WriteLine($"[SendPrompt] Gemini output JSON parse failed: {ex.Message}");
+                }
+            }
+
+            if (gotResult)
+            {
+                if (!isError && sessionId != null)
+                {
+                    GeminiProjectSessions[workDir] = sessionId;
+                    _ = Task.Run(SaveProjectState);
+                }
+                else if (isError && resumeId != null)
+                {
+                    // Same reasoning as the other three runners: a resumed run that
+                    // still failed means this session is no longer resumable - clear it
+                    // so the next message starts fresh instead of repeating the failure.
+                    GeminiProjectSessions.TryRemove(workDir, out _);
+                    _ = Task.Run(SaveProjectState);
+                    Console.WriteLine($"[SendPrompt] Resumed Gemini run failed for {workDir} - cleared its pinned session, next message starts fresh");
+                }
+
+                if (tokensUsed > 0)
+                {
+                    long contextWindow = EstimateContextWindow("gemini", model);
+                    TokenUsageByProjectAgent[AgentSettingsKey(workDir, "gemini")] =
+                        new TokenUsageInfo("gemini", tokensUsed, contextWindow, model, DateTimeOffset.UtcNow.ToUnixTimeMilliseconds());
+                    _ = Task.Run(SaveProjectState);
+                    _ = BroadcastUsageUpdateAsync(workDir, "gemini", tokensUsed, contextWindow);
+                }
+
+                await BroadcastSessionEventAsync(
+                    "prompt_result", isError ? "Prompt finished with an error" : "Prompt finished", Truncate(resultText ?? "", 3999), cwd: workDir, agent: "gemini");
+                Console.WriteLine($"[SendPrompt] Gemini completed (is_error={isError}): {Truncate(resultText, 300)}");
+            }
+            else
+            {
+                Console.WriteLine($"[SendPrompt] Gemini run produced no parseable result (exit code {process.ExitCode}). stderr: {Truncate(stderr, 500)}");
+                await BroadcastSessionEventAsync(
+                    "prompt_result", "Prompt failed", $"Process exited with code {process.ExitCode} before producing a parseable result.", cwd: workDir, agent: "gemini");
+            }
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"[SendPrompt] Failed to run headless Gemini prompt: {ex.Message}");
+            await BroadcastSessionEventAsync("prompt_result", "Prompt failed", ex.Message, cwd: workDir, agent: "gemini");
+        }
+        finally
+        {
+            PromptRunLock.Release();
+        }
+    }
+
+    // Devin CLI's `-p` (headless print) mode never exits on its own after printing its
+    // final response - confirmed live across every test this session (always had to be
+    // killed by an outer timeout; a clean exit code was never observed). Unlike
+    // OpenCode's own non-exiting quirk (gotcha #28), there's no streaming JSON event to
+    // detect "this is the real final answer" - stdout is one plain-text blob written
+    // essentially atomically once generation completes (confirmed live: the full
+    // response was already present the moment it was first checked, no partial/
+    // trickling output observed). So instead of awaiting WaitForExitAsync, this reads
+    // stdout incrementally and polls an IDLE timer: once some output has arrived and
+    // stays unchanged for 8s, that's treated as the real end of the turn and the
+    // process tree is killed. A generous 900s hard ceiling backstops a genuine hang
+    // (e.g. a multi-tool-call turn where several individual PreToolUse approvals each
+    // burn close to their own ~90s phone-wait budget).
+    async Task RunHeadlessDevinCliPromptAsync(string exePath, string? profileDir, string workDir, string prompt, string? model = null)
+    {
+        await PromptRunLock.WaitAsync();
+        try
+        {
+            Console.WriteLine($"[SendPrompt] Starting headless Devin CLI run in {workDir}");
+
+            var resumeId = DevinCliProjectSessions.TryGetValue(workDir, out var existingSessionId) ? existingSessionId : null;
+            Console.WriteLine($"[SendPrompt] Devin CLI resumeId for '{workDir}': '{resumeId ?? "(none)"}'");
+
+            var psi = new ProcessStartInfo
+            {
+                FileName               = exePath,
+                WorkingDirectory       = workDir,
+                RedirectStandardOutput = true,
+                RedirectStandardError  = true,
+                UseShellExecute        = false,
+                CreateNoWindow         = true,
+                StandardOutputEncoding = Encoding.UTF8
+            };
+
+            if (!string.IsNullOrEmpty(resumeId))
+            {
+                psi.ArgumentList.Add("-r");
+                psi.ArgumentList.Add(resumeId);
+            }
+            psi.ArgumentList.Add("-p");
+            psi.ArgumentList.Add(prompt);
+            // AethelHook's own PreToolUse hook is the real gate here (adversarially
+            // confirmed live it still fires and blocks under dangerous mode) - Devin's
+            // default "auto" permission mode has no way to prompt at all in headless
+            // mode and just refuses the tool call outright instead ("session is in
+            // non-interactive mode... restart with --permission-mode dangerous"),
+            // confirmed live. Same precedent as Codex's approval_policy="never" (gotcha
+            // #16).
+            psi.ArgumentList.Add("--permission-mode");
+            psi.ArgumentList.Add("dangerous");
+            if (!string.IsNullOrEmpty(model))
+            {
+                psi.ArgumentList.Add("--model");
+                psi.ArgumentList.Add(model);
+            }
+
+            // Same LocalSystem-profile override as the other headless runners.
+            if (!string.IsNullOrEmpty(profileDir))
+            {
+                psi.EnvironmentVariables["USERPROFILE"]  = profileDir;
+                psi.EnvironmentVariables["HOME"]         = profileDir;
+                psi.EnvironmentVariables["APPDATA"]      = Path.Combine(profileDir, "AppData", "Roaming");
+                psi.EnvironmentVariables["LOCALAPPDATA"] = Path.Combine(profileDir, "AppData", "Local");
+                psi.EnvironmentVariables["HOMEDRIVE"]    = Path.GetPathRoot(profileDir)?.TrimEnd('\\');
+                psi.EnvironmentVariables["HOMEPATH"]     = profileDir.Substring(Path.GetPathRoot(profileDir)?.TrimEnd('\\')?.Length ?? 0);
+            }
+
+            using var process = new Process { StartInfo = psi };
+            process.Start();
+
+            var stdoutBuilder = new StringBuilder();
+            var lastDataAt = DateTime.UtcNow;
+            var stdoutReaderTask = Task.Run(async () =>
+            {
+                var buffer = new char[4096];
+                try
+                {
+                    while (true)
+                    {
+                        var read = await process.StandardOutput.ReadAsync(buffer, 0, buffer.Length);
+                        if (read == 0) break;
+                        stdoutBuilder.Append(buffer, 0, read);
+                        lastDataAt = DateTime.UtcNow;
+                    }
+                }
+                catch { }
+            });
+            var stderrTask = process.StandardError.ReadToEndAsync();
+
+            var hardDeadline = DateTime.UtcNow.AddSeconds(900);
+            while (!process.HasExited)
+            {
+                await Task.Delay(500);
+                if (stdoutBuilder.Length > 0 && (DateTime.UtcNow - lastDataAt).TotalSeconds > 8)
+                {
+                    Console.WriteLine("[SendPrompt] Devin CLI produced a response but didn't exit on its own - killing (idle timeout)");
+                    break;
+                }
+                if (DateTime.UtcNow > hardDeadline)
+                {
+                    Console.WriteLine("[SendPrompt] Devin CLI hard timeout reached - killing");
+                    break;
+                }
+            }
+            if (!process.HasExited)
+            {
+                try { process.Kill(entireProcessTree: true); } catch { }
+            }
+            try { await Task.WhenAny(stdoutReaderTask, Task.Delay(1000)); } catch { }
+            var stderr = await stderrTask;
+            var resultText = stdoutBuilder.ToString().Trim();
+            var isError = string.IsNullOrEmpty(resultText);
+
+            // Capture the just-created/just-updated session id by querying Devin's own
+            // sessions.db directly via find_latest_session.py - there is no machine-
+            // readable session id anywhere in -p mode's plain-text stdout.
+            string? newSessionId = null;
+            try
+            {
+                var pythonPath = FindPythonExe();
+                if (pythonPath != null)
+                {
+                    var findScript = @"C:\ProgramData\AethelHook\hooks\devincli\find_latest_session.py";
+                    // Pass the resolved db path explicitly - this script is spawned
+                    // directly by the LocalSystem-run service (not as a child of
+                    // devin.exe the way on_stop.ps1/extract_summary.py are), so it
+                    // never inherits the real user's overridden APPDATA the way that
+                    // chain does. Relying on %APPDATA% expansion here silently
+                    // resolved to LocalSystem's own empty profile - confirmed live
+                    // (exit code 0, empty output, every single time).
+                    var dbPath = !string.IsNullOrEmpty(profileDir)
+                        ? Path.Combine(profileDir, "AppData", "Roaming", "devin", "cli", "sessions.db")
+                        : null;
+                    var findPsi = new ProcessStartInfo
+                    {
+                        FileName               = pythonPath,
+                        RedirectStandardOutput = true,
+                        UseShellExecute        = false,
+                        CreateNoWindow         = true
+                    };
+                    findPsi.ArgumentList.Add(findScript);
+                    findPsi.ArgumentList.Add(workDir);
+                    if (dbPath != null) findPsi.ArgumentList.Add(dbPath);
+                    Console.WriteLine($"[SendPrompt] Devin CLI session lookup: python='{pythonPath}' script='{findScript}' workDir='{workDir}' dbPath='{dbPath}'");
+                    using var findProc = Process.Start(findPsi);
+                    if (findProc != null)
+                    {
+                        var findOutTask = findProc.StandardOutput.ReadToEndAsync();
+                        if (findProc.WaitForExit(5000))
+                        {
+                            var findOut = await findOutTask;
+                            Console.WriteLine($"[SendPrompt] Devin CLI session lookup raw output: '{findOut}' (exit code {findProc.ExitCode})");
+                            if (!string.IsNullOrWhiteSpace(findOut)) newSessionId = findOut.Trim();
+                        }
+                        else
+                        {
+                            try { findProc.Kill(); } catch { }
+                        }
+                    }
+                }
+                else
+                {
+                    Console.WriteLine("[SendPrompt] Python not found on PATH - Devin CLI session id could not be captured, next message will start fresh");
+                }
+            }
+            catch (Exception ex) { Console.WriteLine($"[SendPrompt] Devin CLI session-id lookup failed: {ex.Message}"); }
+
+            if (!isError && !string.IsNullOrEmpty(newSessionId))
+            {
+                DevinCliProjectSessions[workDir] = newSessionId;
+                _ = Task.Run(SaveProjectState);
+            }
+            else if (isError && resumeId != null)
+            {
+                // Same reasoning as the other runners: a resumed run that still failed
+                // means this session is no longer resumable - clear it so the next
+                // message starts fresh instead of repeating the failure.
+                DevinCliProjectSessions.TryRemove(workDir, out _);
+                _ = Task.Run(SaveProjectState);
+                Console.WriteLine($"[SendPrompt] Resumed Devin CLI run failed for {workDir} - cleared its pinned session, next message starts fresh");
+            }
+
+            await BroadcastSessionEventAsync(
+                "prompt_result", isError ? "Prompt finished with an error" : "Prompt finished",
+                Truncate(isError ? (string.IsNullOrWhiteSpace(stderr) ? "No response produced." : stderr) : resultText, 3999),
+                cwd: workDir, agent: "devincli");
+            Console.WriteLine($"[SendPrompt] Devin CLI completed (is_error={isError}): {Truncate(resultText, 300)}");
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"[SendPrompt] Failed to run headless Devin CLI prompt: {ex.Message}");
+            await BroadcastSessionEventAsync("prompt_result", "Prompt failed", ex.Message, cwd: workDir, agent: "devincli");
+        }
+        finally
+        {
+            PromptRunLock.Release();
+        }
+    }
+
 });
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -2208,10 +2767,16 @@ RestoreClaudeCodeHooks();
 RestoreCodexHooks();
 RestoreAntigravityHooks();
 RestoreOpenCodeHooks();
+RestoreGeminiHooks();
+RestoreCopilotHooks();
+RestoreDevinHooks();
 app.Lifetime.ApplicationStopping.Register(RemoveClaudeCodeHooks);
 app.Lifetime.ApplicationStopping.Register(RemoveCodexHooks);
 app.Lifetime.ApplicationStopping.Register(RemoveAntigravityHooks);
 app.Lifetime.ApplicationStopping.Register(RemoveOpenCodeHooks);
+app.Lifetime.ApplicationStopping.Register(RemoveGeminiHooks);
+app.Lifetime.ApplicationStopping.Register(RemoveCopilotHooks);
+app.Lifetime.ApplicationStopping.Register(RemoveDevinHooks);
 
 app.Run();
 
@@ -2584,6 +3149,144 @@ static (string? CliPath, string? UserProfile) FindOpenCodeCliInfo()
     return (null, null);
 }
 
+// Gemini CLI ships as a plain npm package (`npm install -g @google/gemini-cli`) whose
+// package.json "bin" entry points at bundle/gemini.js - a Node.js script, not a
+// standalone platform binary like OpenCode's. Confirmed live (2026-07-21) that this is
+// the STABLE entry point (unlike the many hash-named chunk files under bundle/ that
+// gemini.js imports internally, which differ per build and can't be hardcoded).
+// Requires node.exe directly - checks the standard official-installer location first,
+// same "well-known default path" approach as the other Find*CliInfo helpers, not an
+// exhaustive PATH search. Same "scan C:\Users\*" pattern as FindClaudeCliInfo/
+// FindCodexCliInfo/FindOpenCodeCliInfo for the profile dir, since this runs as
+// LocalSystem and needs it for the same env-var override reason.
+static (string? NodeExePath, string? GeminiScriptPath, string? UserProfile) FindGeminiCliInfo()
+{
+    string? nodeExePath = null;
+    foreach (var candidate in new[]
+             {
+                 @"C:\Program Files\nodejs\node.exe",
+                 @"C:\Program Files (x86)\nodejs\node.exe"
+             })
+    {
+        if (File.Exists(candidate)) { nodeExePath = candidate; break; }
+    }
+    if (nodeExePath == null) return (null, null, null);
+
+    var usersRoot = @"C:\Users";
+    if (!Directory.Exists(usersRoot)) return (nodeExePath, null, null);
+
+    foreach (var dir in Directory.GetDirectories(usersRoot))
+    {
+        var scriptPath = Path.Combine(dir, "AppData", "Roaming", "npm", "node_modules", "@google", "gemini-cli", "bundle", "gemini.js");
+        if (File.Exists(scriptPath)) return (nodeExePath, scriptPath, dir);
+    }
+
+    return (nodeExePath, null, null);
+}
+
+// Devin CLI's standalone terminal binary - confirmed live at
+// <profile>\AppData\Local\devin\cli\bin\devin.exe after the official installer script
+// (irm https://static.devin.ai/cli/setup.ps1 | iex) runs. A genuinely separate binary
+// from the one bundled inside the Devin IDE/Desktop app's own extension folder
+// (resources\app\extensions\windsurf\devin\bin\devin.exe) - that one runs in ACP mode
+// and never fires hooks at all (see RestoreDevinHooks()'s own comment), so only this
+// standalone-install path is usable for either the approval gate or Session Access.
+// Same "scan C:\Users\*" profile pattern as the other Find*CliInfo helpers.
+static (string? ExePath, string? UserProfile) FindDevinCliInfo()
+{
+    var usersRoot = @"C:\Users";
+    if (!Directory.Exists(usersRoot)) return (null, null);
+
+    foreach (var dir in Directory.GetDirectories(usersRoot))
+    {
+        var exePath = Path.Combine(dir, "AppData", "Local", "devin", "cli", "bin", "devin.exe");
+        if (File.Exists(exePath)) return (exePath, dir);
+    }
+
+    return (null, null);
+}
+
+// Resolves python.exe for the two companion scripts (extract_summary.py,
+// find_latest_session.py) that read Devin CLI's own sessions.db directly - the only
+// way to get a summary or a resumable session id out of `-p` mode, which prints
+// plain text with neither. Confirmed live this dev machine's Python install is on the
+// Machine-scope PATH (not just the interactive user's), so the LocalSystem-run
+// service's own inherited PATH already sees it with no profile-env-var override
+// needed - unlike every other Find*CliInfo helper here.
+static string? FindPythonExe()
+{
+    var pathEnv = Environment.GetEnvironmentVariable("PATH") ?? "";
+    foreach (var dir in pathEnv.Split(';'))
+    {
+        if (string.IsNullOrWhiteSpace(dir)) continue;
+        foreach (var name in new[] { "python.exe", "python3.exe" })
+        {
+            var candidate = Path.Combine(dir.Trim(), name);
+            if (File.Exists(candidate)) return candidate;
+        }
+    }
+    return null;
+}
+
+// Gemini CLI runs an untrusted project folder in a restricted "safe mode" - confirmed
+// live (2026-07-21): write_file/run_shell_command aren't even registered as available
+// tools, and BeforeTool/AfterTool hooks (global or project-level) silently never fire at
+// all, regardless of the --skip-trust flag (which only bypasses the interactive prompt,
+// NOT the safe-mode restriction itself - --skip-trust alone still left tools missing in
+// testing). The only thing that actually unlocked full tool access and hook execution
+// was adding the folder to ~/.gemini/trustedFolders.json directly. Called before every
+// headless run so Session Access never depends on the user having separately, manually
+// trusted that folder via an interactive `gemini` session first.
+static string? FindGeminiTrustedFoldersPath()
+{
+    var usersRoot = @"C:\Users";
+    if (Directory.Exists(usersRoot))
+    {
+        foreach (var dir in Directory.GetDirectories(usersRoot))
+        {
+            var geminiDir = Path.Combine(dir, ".gemini");
+            if (Directory.Exists(geminiDir))
+                return Path.Combine(geminiDir, "trustedFolders.json");
+        }
+    }
+
+    var direct = Path.Combine(
+        Environment.GetFolderPath(Environment.SpecialFolder.UserProfile),
+        ".gemini", "trustedFolders.json");
+    return direct;
+}
+
+static void TrustGeminiFolder(string projectDir)
+{
+    try
+    {
+        var trustPath = FindGeminiTrustedFoldersPath();
+        if (trustPath == null) return;
+
+        JsonObject trusted;
+        if (File.Exists(trustPath))
+            trusted = JsonNode.Parse(File.ReadAllText(trustPath)) as JsonObject ?? new JsonObject();
+        else
+        {
+            trusted = new JsonObject();
+            Directory.CreateDirectory(Path.GetDirectoryName(trustPath)!);
+        }
+
+        // Observed key format live: lowercase drive letter, forward slashes
+        // (e.g. "c:/aethelhook") - normalized the same way here rather than guessing.
+        var key = projectDir.Replace('\\', '/').ToLowerInvariant();
+        if (trusted[key]?.GetValue<string>() == "TRUST_FOLDER") return; // already trusted
+
+        trusted[key] = "TRUST_FOLDER";
+        File.WriteAllText(trustPath, trusted.ToJsonString(new JsonSerializerOptions { WriteIndented = true }));
+        Console.WriteLine($"[Gemini] Trusted folder for headless run: {projectDir}");
+    }
+    catch (Exception ex)
+    {
+        Console.WriteLine($"[Gemini] Warning: could not update trustedFolders.json: {ex.Message}");
+    }
+}
+
 // Shared by /hook/notify-style endpoints: broadcasts a fire-and-forget event to the
 // phone over WS. Extracted here since /hook/session-update and the headless prompt
 // runner (/hook/send-prompt) both need to push the identical shape of event.
@@ -2629,6 +3332,7 @@ static long EstimateContextWindow(string agent, string? model) => agent switch
 {
     "codex"    => 272_000, // GPT-5-class default context window (OpenAI's published figure)
     "opencode" => 200_000, // varies by whatever provider/model is configured - generic fallback
+    "gemini"   => 1_000_000, // Gemini 3's published context window figure
     _          => 200_000
 };
 
@@ -3063,6 +3767,377 @@ static void RemoveOpenCodeHooks()
     catch (Exception ex)
     {
         Console.WriteLine($"[OpenCode] Warning: could not remove plugin registration: {ex.Message}");
+    }
+}
+
+// Gemini CLI's global config is ~/.gemini/settings.json - confirmed live this session
+// this file frequently already holds real content on a machine that's also used
+// Antigravity IDE (which shares the same .gemini directory but writes its own separate
+// hooks.json under .gemini\config\, so there's no direct file collision - see
+// FindAntigravityHooksPath above). Merge-preserving rather than overwrite-whole-file,
+// same reasoning as RestoreOpenCodeHooks() - confirmed live this settings.json can hold
+// a real "permissions" block that must survive untouched.
+static string? FindGeminiSettingsPath()
+{
+    var usersRoot = @"C:\Users";
+    if (Directory.Exists(usersRoot))
+    {
+        foreach (var dir in Directory.GetDirectories(usersRoot))
+        {
+            var geminiDir = Path.Combine(dir, ".gemini");
+            if (Directory.Exists(geminiDir))
+                return Path.Combine(geminiDir, "settings.json");
+        }
+    }
+
+    var direct = Path.Combine(
+        Environment.GetFolderPath(Environment.SpecialFolder.UserProfile),
+        ".gemini", "settings.json");
+    return direct;
+}
+
+static void RestoreGeminiHooks()
+{
+    try
+    {
+        var settingsPath = FindGeminiSettingsPath();
+        if (settingsPath == null)
+        {
+            Console.WriteLine("[Gemini] Warning: could not locate .gemini directory - hooks not restored");
+            return;
+        }
+
+        Directory.CreateDirectory(Path.GetDirectoryName(settingsPath)!);
+
+        // geminicli/ subfolder - distinct from hooks/gemini/, which is Antigravity's own
+        // script folder (see gotcha history in CLAUDE.md) - keeping them separate avoids
+        // any confusion between the two very differently-behaved integrations.
+        const string beforeToolCmd = @"powershell.exe -ExecutionPolicy Bypass -File C:\ProgramData\AethelHook\hooks\geminicli\on_before_tool.ps1";
+        const string afterToolCmd  = @"powershell.exe -ExecutionPolicy Bypass -File C:\ProgramData\AethelHook\hooks\geminicli\on_after_tool.ps1";
+        const string afterAgentCmd = @"powershell.exe -ExecutionPolicy Bypass -File C:\ProgramData\AethelHook\hooks\geminicli\on_after_agent.ps1";
+
+        JsonObject settings;
+        if (File.Exists(settingsPath))
+        {
+            settings = JsonNode.Parse(File.ReadAllText(settingsPath)) as JsonObject ?? new JsonObject();
+        }
+        else
+        {
+            settings = new JsonObject();
+        }
+
+        // Matcher "*" rather than an explicit tool-name list - deliberately broad so any
+        // tool Gemini CLI adds in a future version is gated by default (fail safe), with
+        // the handful of pure-bookkeeping tools (update_topic, list_background_processes)
+        // exempted inside on_before_tool.ps1 itself rather than via a matcher exclude
+        // list (BeforeTool's matcher only supports positive matches).
+        settings["hooks"] = new JsonObject
+        {
+            ["BeforeTool"] = new JsonArray
+            {
+                new JsonObject
+                {
+                    ["matcher"] = "*",
+                    ["hooks"]   = new JsonArray { new JsonObject { ["type"] = "command", ["command"] = beforeToolCmd } }
+                }
+            },
+            ["AfterTool"] = new JsonArray
+            {
+                new JsonObject
+                {
+                    ["matcher"] = "*",
+                    ["hooks"]   = new JsonArray { new JsonObject { ["type"] = "command", ["command"] = afterToolCmd } }
+                }
+            },
+            // SessionEnd deliberately NOT wired to the same command - confirmed live this
+            // session it fires ALONGSIDE AfterAgent for every headless `-p` run (the
+            // process exits right after its one turn, satisfying both "turn finished"
+            // and "session ended" simultaneously), producing a duplicate "Gemini
+            // finished" notification on every single Session Access prompt. AfterAgent
+            // alone already covers both the headless single-turn case and an
+            // interactive session's per-turn case; SessionEnd's only unique value (a
+            // final notice when a long-running interactive session actually closes)
+            // isn't needed for this fire-and-forget notification's purpose.
+            ["AfterAgent"] = new JsonArray
+            {
+                new JsonObject { ["hooks"] = new JsonArray { new JsonObject { ["type"] = "command", ["command"] = afterAgentCmd } } }
+            }
+        };
+
+        File.WriteAllText(settingsPath, settings.ToJsonString(new JsonSerializerOptions { WriteIndented = true }));
+        Console.WriteLine($"[Gemini] hooks restored in {settingsPath}");
+    }
+    catch (Exception ex)
+    {
+        Console.WriteLine($"[Gemini] Warning: could not restore hooks: {ex.Message}");
+    }
+}
+
+static void RemoveGeminiHooks()
+{
+    try
+    {
+        var settingsPath = FindGeminiSettingsPath();
+        if (settingsPath == null || !File.Exists(settingsPath)) return;
+
+        var settings = JsonNode.Parse(File.ReadAllText(settingsPath)) as JsonObject;
+        if (settings == null) return;
+
+        settings.Remove("hooks");
+
+        File.WriteAllText(settingsPath, settings.ToJsonString(new JsonSerializerOptions { WriteIndented = true }));
+        Console.WriteLine("[Gemini] hooks removed from settings.json - native Gemini CLI approvals active");
+    }
+    catch (Exception ex)
+    {
+        Console.WriteLine($"[Gemini] Warning: could not remove hooks: {ex.Message}");
+    }
+}
+
+// GitHub Copilot CLI's hook mechanism is the simplest of all five agents - personal
+// hooks live as standalone *.json files dropped into ~/.copilot/hooks/, each file
+// independent (confirmed live 2026-07-22), so unlike Claude/OpenCode/Gemini's shared
+// single-config-file merge, AethelHook just writes its own distinctly-named file here
+// with no read-merge-preserve step needed - removal is just deleting that one file.
+static string? FindCopilotHooksDir()
+{
+    var usersRoot = @"C:\Users";
+    if (Directory.Exists(usersRoot))
+    {
+        foreach (var dir in Directory.GetDirectories(usersRoot))
+        {
+            var copilotDir = Path.Combine(dir, ".copilot");
+            if (Directory.Exists(copilotDir))
+                return Path.Combine(copilotDir, "hooks");
+        }
+    }
+
+    var direct = Path.Combine(
+        Environment.GetFolderPath(Environment.SpecialFolder.UserProfile),
+        ".copilot", "hooks");
+    return direct;
+}
+
+const string CopilotHooksFileName = "aethelhook-hooks.json";
+
+static void RestoreCopilotHooks()
+{
+    try
+    {
+        var hooksDir = FindCopilotHooksDir();
+        if (hooksDir == null)
+        {
+            Console.WriteLine("[Copilot] Warning: could not locate .copilot directory - hooks not restored");
+            return;
+        }
+
+        Directory.CreateDirectory(hooksDir);
+        var hooksPath = Path.Combine(hooksDir, CopilotHooksFileName);
+
+        const string permissionCmd = @"powershell -NoProfile -ExecutionPolicy Bypass -File C:\ProgramData\AethelHook\hooks\copilot\on_permission_request.ps1";
+        const string agentStopCmd  = @"powershell -NoProfile -ExecutionPolicy Bypass -File C:\ProgramData\AethelHook\hooks\copilot\on_agent_stop.ps1";
+
+        // Approval-gate-only (2026-07-22, dropped headless Session Access - see
+        // send-prompt's rejection for "copilot") - permissionRequest (the gate itself)
+        // + agentStop (a done notification for interactive turns, same scope as
+        // Antigravity's own approval-gate-only precedent, gotcha #26/#29) only.
+        // postToolUse deliberately dropped too - its only purpose was Session Access's
+        // mid-turn chunked-progress heartbeat, which no longer applies; Antigravity's
+        // own hooks.json never had a postToolUse equivalent either. No matcher on
+        // permissionRequest - deliberately broad, same "gate everything by default"
+        // reasoning as Gemini's matcher "*". timeoutSec 100 leaves enough headroom
+        // above on_permission_request.ps1's own 90s phone-wait budget - Copilot's hook
+        // timeout fails OPEN (allows the action), the opposite of every other agent's
+        // safe default, so this script must always finish first.
+        var hooks = new JsonObject
+        {
+            ["version"] = 1,
+            ["disableAllHooks"] = false,
+            ["hooks"] = new JsonObject
+            {
+                ["permissionRequest"] = new JsonArray
+                {
+                    new JsonObject { ["type"] = "command", ["powershell"] = permissionCmd, ["timeoutSec"] = 100 }
+                },
+                ["agentStop"] = new JsonArray
+                {
+                    new JsonObject { ["type"] = "command", ["powershell"] = agentStopCmd, ["timeoutSec"] = 10 }
+                }
+            }
+        };
+
+        File.WriteAllText(hooksPath, hooks.ToJsonString(new JsonSerializerOptions { WriteIndented = true }));
+        Console.WriteLine($"[Copilot] hooks restored at {hooksPath}");
+    }
+    catch (Exception ex)
+    {
+        Console.WriteLine($"[Copilot] Warning: could not restore hooks: {ex.Message}");
+    }
+}
+
+static void RemoveCopilotHooks()
+{
+    try
+    {
+        var hooksDir = FindCopilotHooksDir();
+        if (hooksDir == null) return;
+        var hooksPath = Path.Combine(hooksDir, CopilotHooksFileName);
+        if (!File.Exists(hooksPath)) return;
+
+        File.Delete(hooksPath);
+        Console.WriteLine("[Copilot] hooks removed - native Copilot CLI approvals active");
+    }
+    catch (Exception ex)
+    {
+        Console.WriteLine($"[Copilot] Warning: could not remove hooks: {ex.Message}");
+    }
+}
+
+// Devin CLI's global config lives at %APPDATA%\devin\config.json per its own bundled
+// docs - confirmed live 2026-07-22 the real file also holds "permissions"/model prefs/
+// an "org_id" the CLI itself writes after login, so merge-preserving rather than
+// overwrite-whole-file, same reasoning as RestoreGeminiHooks(). Scope is deliberately
+// the STANDALONE terminal CLI only - Devin Desktop (the actual "Devin IDE" product)
+// runs devin.exe in ACP mode as an editor subprocess, and ACP mode never reads this
+// file's hooks at all (confirmed live: a fresh ACP process, well after this file was
+// edited, showed zero trace of hooks loading anywhere - permission decisions are
+// handed to the connected editor client instead, matching Devin's own bundled Xcode
+// ACP doc). Only devin.exe run directly from a terminal goes through this gate.
+//
+// Note: this dev machine's AppData\Roaming has case-sensitivity enabled on this one
+// directory (rare - likely WSL/dev-mode interop), so "devin" and "Devin" are two
+// genuinely different directories here, and devin.exe itself was confirmed live to
+// read/write via whichever casing already exists on disk, not strictly the docs'
+// lowercase. Resolving by scanning for whatever casing is already there (falling back
+// to the documented lowercase only if neither exists yet) keeps this correct both here
+// and on a normal case-insensitive end-user machine, where the two are the same file
+// regardless of which casing is used.
+static string? FindDevinConfigPath()
+{
+    var usersRoot = @"C:\Users";
+    if (Directory.Exists(usersRoot))
+    {
+        foreach (var dir in Directory.GetDirectories(usersRoot))
+        {
+            var roaming = Path.Combine(dir, "AppData", "Roaming");
+            if (!Directory.Exists(roaming)) continue;
+            var existing = Directory.GetDirectories(roaming)
+                .FirstOrDefault(d => Path.GetFileName(d).Equals("devin", StringComparison.OrdinalIgnoreCase));
+            if (existing != null)
+                return Path.Combine(existing, "config.json");
+        }
+    }
+
+    var direct = Path.Combine(
+        Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData),
+        "devin", "config.json");
+    return direct;
+}
+
+static void RestoreDevinHooks()
+{
+    try
+    {
+        var configPath = FindDevinConfigPath();
+        if (configPath == null)
+        {
+            Console.WriteLine("[DevinCLI] Warning: could not resolve devin config path - hooks not restored");
+            return;
+        }
+
+        Directory.CreateDirectory(Path.GetDirectoryName(configPath)!);
+
+        JsonObject config;
+        if (File.Exists(configPath))
+        {
+            config = JsonNode.Parse(File.ReadAllText(configPath)) as JsonObject ?? new JsonObject();
+        }
+        else
+        {
+            config = new JsonObject();
+        }
+
+        const string preToolCmd = "powershell -NoProfile -ExecutionPolicy Bypass -File \"C:\\ProgramData\\AethelHook\\hooks\\devincli\\on_pre_tool_use.ps1\"";
+        const string stopCmd     = "powershell -NoProfile -ExecutionPolicy Bypass -File \"C:\\ProgramData\\AethelHook\\hooks\\devincli\\on_stop.ps1\"";
+
+        // PreToolUse alone is enough for the gate - confirmed live it fires
+        // unconditionally regardless of --permission-mode, including "dangerous"
+        // (Devin's most permissive auto-approve-everything mode), so there's no need
+        // for the separate PermissionRequest event too. "timeout": 100 leaves headroom
+        // above the script's own 90s phone-wait budget - Devin's hook timeout fails
+        // OPEN (does not block) if exceeded, same danger as Copilot's hook, so this
+        // script must always finish first.
+        //
+        // Stop is a plain done-notification, added after discovering (2026-07-22) that
+        // Devin's own Stop event was incidentally cross-firing Claude Code's own Stop
+        // hook via Devin's default read_config_from.claude import behavior - see
+        // on_agent_done.ps1's own fix for that. on_stop.ps1 never emits a "decision"
+        // field - Stop is one of the events that CAN block ("prevent premature
+        // stopping"), and a stray block here would risk a doom-loop, the same class of
+        // bug already hit and fixed for OpenCode (gotcha #28).
+        if (config["hooks"] is not JsonObject hooksObj)
+        {
+            hooksObj = new JsonObject();
+            config["hooks"] = hooksObj;
+        }
+
+        hooksObj["PreToolUse"] = new JsonArray
+        {
+            new JsonObject
+            {
+                ["matcher"] = "",
+                ["hooks"] = new JsonArray
+                {
+                    new JsonObject { ["type"] = "command", ["command"] = preToolCmd, ["timeout"] = 100 }
+                }
+            }
+        };
+
+        hooksObj["Stop"] = new JsonArray
+        {
+            new JsonObject
+            {
+                ["matcher"] = "",
+                ["hooks"] = new JsonArray
+                {
+                    new JsonObject { ["type"] = "command", ["command"] = stopCmd, ["timeout"] = 15 }
+                }
+            }
+        };
+
+        File.WriteAllText(configPath, config.ToJsonString(new JsonSerializerOptions { WriteIndented = true }));
+        Console.WriteLine($"[DevinCLI] hooks restored in {configPath}");
+    }
+    catch (Exception ex)
+    {
+        Console.WriteLine($"[DevinCLI] Warning: could not restore hooks: {ex.Message}");
+    }
+}
+
+static void RemoveDevinHooks()
+{
+    try
+    {
+        var configPath = FindDevinConfigPath();
+        if (configPath == null || !File.Exists(configPath)) return;
+
+        var config = JsonNode.Parse(File.ReadAllText(configPath)) as JsonObject;
+        if (config == null) return;
+
+        if (config["hooks"] is JsonObject hooksObj)
+        {
+            hooksObj.Remove("PreToolUse");
+            hooksObj.Remove("Stop");
+            if (hooksObj.Count == 0)
+                config.Remove("hooks");
+        }
+
+        File.WriteAllText(configPath, config.ToJsonString(new JsonSerializerOptions { WriteIndented = true }));
+        Console.WriteLine("[DevinCLI] hooks removed from config.json - native Devin CLI approvals active");
+    }
+    catch (Exception ex)
+    {
+        Console.WriteLine($"[DevinCLI] Warning: could not remove hooks: {ex.Message}");
     }
 }
 
@@ -3665,7 +4740,8 @@ public record SessionUpdateRequest(
     [property: JsonPropertyName("message")]   string? Message,
     [property: JsonPropertyName("detail")]    string? Detail,
     [property: JsonPropertyName("tool_name")] string? ToolName,
-    [property: JsonPropertyName("cwd")]       string? Cwd
+    [property: JsonPropertyName("cwd")]       string? Cwd,
+    [property: JsonPropertyName("agent")]     string? Agent
 );
 
 public record SendPromptRequest(

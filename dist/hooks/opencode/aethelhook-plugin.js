@@ -285,6 +285,7 @@ export const AethelHookPlugin = async (ctx) => {
             detail,
             tool_name: toolName,
             cwd: directory,
+            agent: "opencode",
           }),
         });
       } catch (e) {
