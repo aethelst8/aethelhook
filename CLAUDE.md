@@ -1,9 +1,11 @@
 # AethelHook - Working Notes for Claude Code
 
 AI agent permission gateway: routes dangerous tool calls (and now phone-initiated
-prompts) between Claude Code / Codex / OpenCode and an Android phone. Antigravity
-support exists in code (see gotcha #29) but is no longer shipped - a fresh install
-does not configure it. See
+prompts) between Claude Code / Codex / OpenCode / Gemini CLI / GitHub Copilot CLI /
+Devin CLI and an Android phone. Copilot CLI is approval-gate-only (no Session Access) -
+see gotcha #33. Devin CLI started the same way but gained full Session Access the same
+day - see gotchas #34/#35. Antigravity support exists in code (see gotcha
+#29) but is no longer shipped - a fresh install does not configure it. See
 `README.md` for the public-facing product description; this file is the current,
 continuously-maintained technical reference - keep it up to date as things change,
 don't let it go stale like the archived docs in `docs/archive/` (including the old
@@ -24,7 +26,11 @@ security work since done - see README.md instead).
   Session 0 isolation below).
 - **`app/`** - Android Kotlin/Compose app. 4 tabs: Dashboard, Session, History, Settings.
 - **Hooks** - PowerShell scripts per IDE: `.claude/hooks/` (Claude Code), `.codex/hooks/`
-  (Codex), `.gemini/hooks/` (Antigravity). Dev copies live in the repo; the API's
+  (Codex), `.gemini/hooks/` (Antigravity), `.geminicli/hooks/` (Gemini CLI - a
+  deliberately distinct folder from Antigravity's `.gemini/hooks/`, despite the
+  confusingly similar name; see gotcha #32), `.copilot/hooks/` (GitHub Copilot CLI,
+  see gotcha #33), `.devincli/hooks/` (Devin CLI's standalone terminal CLI only -
+  **not** the Devin IDE, which never fires hooks at all; see gotcha #34). Dev copies live in the repo; the API's
   `Restore*Hooks()` functions (in `Program.cs`) rewrite each IDE's global hook config
   on every service start, pointing at `C:\ProgramData\AethelHook\hooks\` - **not** the
   repo path. Keep dev (`.claude\hooks\`), installer staging (`dist\hooks\`), and the
@@ -781,6 +787,463 @@ security work since done - see README.md instead).
     rebuilt APK was instead uploaded to the *existing* `v1.1.0` GitHub release
     (`gh release upload v1.1.0 aethelhook_v1.1.0.apk --clobber`), the same
     tag-reupload convention used for prior installer-only rebuilds.
+32. **Added Gemini CLI as a 4th, fully-shipped agent (2026-07-21) - approval gate,
+    headless Session Access, and resume all live-verified, with several real
+    surprises along the way.** Distinct from Antigravity (gotchas #26/#29) despite the
+    confusingly similar name - this is Google's separate open-source terminal CLI
+    (`@google/gemini-cli`, npm), not the Antigravity IDE/CLI family.
+    - **Personal/free Google-account login for the standalone `gemini` CLI is dead** -
+      Google discontinued "Login with Google" for individual accounts on June 18,
+      2026, pushing everyone toward Antigravity CLI (`agy`) instead - the same tool
+      this project already rejected twice (gotcha #26's stdout-dropping headless bug,
+      #29's deny-bypass). The only path left for an individual is a `GEMINI_API_KEY`
+      from Google AI Studio (its own separate, tighter free-tier quota - confirmed
+      live hitting a 20-requests/day limit on `gemini-3.5-flash` specifically,
+      per-model, not shared account-wide). AethelHook stores no key itself -
+      `RunHeadlessGeminiPromptAsync` just sets `HOME`/`USERPROFILE` to the real user's
+      profile (same gotcha #2 pattern), and `gemini-cli` auto-loads `GEMINI_API_KEY`
+      from that profile's own `.gemini\.env` if the user has put one there (its own
+      documented persistence mechanism) - no new secret-storage surface added.
+    - **An untrusted project folder runs Gemini CLI in a restricted "safe mode" that
+      breaks both tool access AND hook execution, and `--skip-trust` does NOT fix
+      it.** Confirmed live: in an untrusted folder, `write_file`/`run_shell_command`
+      aren't even registered as available tools (the model gets a "Tool not found"
+      error, not a permission error), and `BeforeTool`/`AfterTool` hooks silently
+      never fire at all - even ones registered globally in `~/.gemini/settings.json`,
+      not just project-level ones. `--skip-trust` only suppresses the interactive
+      prompt; it does NOT grant full tool access or unlock hook execution the way it
+      looks like it should. The only thing that actually worked was adding the folder
+      to `~/.gemini/trustedFolders.json` directly (key format confirmed live:
+      lowercase drive letter, forward slashes, e.g. `"c:/aethelhook"`). Fix:
+      `TrustGeminiFolder()` in `Program.cs` writes that entry automatically before
+      every headless run, so Session Access never depends on the user having
+      separately, manually trusted the folder via an interactive `gemini` session
+      first.
+    - **A `BeforeTool` deny genuinely blocks execution even with `--approval-mode
+      yolo` active** - confirmed live via a real adversarial test: armed a test hook
+      that always denies, then prompted Gemini to call `write_file`,
+      `run_shell_command`, `read_file`, `list_directory`, `google_web_search`, and
+      `list_background_processes` all with YOLO mode on - every call across that
+      session was blocked with the hook's own reason surfaced back to the model, zero
+      bypass. A meaningfully better result than Antigravity's confirmed deny-bypass
+      (gotcha #29) - this is why Gemini CLI got shipped where Antigravity didn't.
+    - **`-o json` headless mode prints ONE pretty-printed JSON blob at the very end of
+      stdout, not a newline-delimited event stream** like Codex's `--json`/OpenCode's
+      `--format json` - confirmed live even a hard failure (quota exceeded, auth
+      error) still ends with a parseable `{"session_id":...,"error":{...}}` object.
+      This means `RunHeadlessGeminiPromptAsync` reads all of stdout before parsing
+      (scanning backward for the last line that's exactly `{`, since diagnostic
+      banners like "YOLO mode is enabled..." can precede the real JSON), and there's
+      no mid-turn `session_update` preview the way Codex/OpenCode's streaming formats
+      give for free - only the `AfterTool` hook's own heartbeat covers that gap here.
+    - **`--resume` genuinely accepts an arbitrary session_id/UUID, despite `--help`
+      only documenting `"latest"` or a numeric index** - initially assumed unsafe to
+      guess at (shipped without resume wired up, deferring to "test it later" per
+      explicit user request) but live-verified two ways in a same-day follow-up: a
+      manually-chosen UUID passed via `--session-id` on the first call, and (the
+      pattern actually wired up) the auto-generated `session_id` captured from a prior
+      run's own JSON response - both resumed correctly in a real word-recall test.
+      Same explicit-ID pattern as Codex's `thread_id`/OpenCode's `sessionID`, tracked
+      in a new `GeminiProjectSessions` dictionary, not the "latest" ambiguity
+      originally feared (which would have risked grabbing an unrelated directory's or
+      the user's own interactive session).
+    - **`gemini-cli` ships as a plain npm package with no standalone platform binary**
+      (unlike OpenCode) - package.json's `bin` entry points at `bundle/gemini.js`, a
+      Node.js script; the many hash-named chunk files under `bundle/` it imports
+      internally differ per build/version and can't be hardcoded, but `gemini.js`
+      itself is stable. `FindGeminiCliInfo()` resolves `node.exe` from the standard
+      installer location (`C:\Program Files\nodejs\node.exe`) and spawns
+      `node.exe <path-to-gemini.js> ...` directly - same "scan C:\Users\*" profile
+      pattern as the other three `Find*CliInfo` helpers.
+    - **Real bugs found and fixed while wiring this up, most predating Gemini
+      entirely:**
+      - `/hook/token-usage` had a hardcoded `{"claude","codex","opencode"}` agent
+        filter that silently never included `"gemini"` - the token tracking itself
+        was working fine, it just wasn't exposed on that read endpoint.
+      - `/hook/session-update` never accepted an `agent` field at all - every "still
+        working..." heartbeat defaulted to `<claude>` regardless of source. Caught
+        live when a `update_topic` heartbeat (a Gemini-only tool, never used by
+        Claude) showed up mislabeled `<claude>` in `api.log`. This bug predated Gemini
+        and equally affected OpenCode's own identical heartbeat hook (added back in
+        the 2026-07-16 session) - fixed both call sites (`on_after_tool.ps1`,
+        `aethelhook-plugin.js`) plus the endpoint itself.
+      - Wiring `on_after_agent.ps1` to both `AfterAgent` and `SessionEnd` produced a
+        duplicate "Gemini finished" phone notification on every single headless
+        prompt - confirmed live both fire together for a headless `-p` run, since the
+        process exits right after its one turn, satisfying both "turn finished" and
+        "session ended" simultaneously. Fixed by dropping the `SessionEnd` wiring
+        entirely - `AfterAgent` alone already covers both the headless case and an
+        interactive session's per-turn case.
+      - `BootReceiver.kt` only ever checked Claude's gateway flag on boot - a device
+        with only Codex or OpenCode enabled (Claude's toggled off) never got the
+        WebSocket service auto-started after a reboot. Predates Gemini; found and
+        fixed while adding its 4th check.
+      - Android's `TokenUsageRow` had no `horizontalScroll`/`maxLines` safety net - fit
+        fine at 3 chips, but adding a 4th (Gemini) squeezed the last chip's `Text`
+        down to near-zero width, and Compose wrapped it character-by-character down
+        the right edge of the screen instead of clipping or scrolling. Confirmed via a
+        real screenshot from the user. Fixed with `horizontalScroll(rememberScrollState())`
+        plus `maxLines = 1, softWrap = false` on each chip.
+      - `SettingsSheet.kt`'s model-list `when(agent)` had no `"gemini"` branch, so it
+        silently fell into the `else -> CLAUDE_MODELS` case - selecting Gemini showed
+        Claude's `opus`/`sonnet`/`fable` aliases, meaningless for Gemini. Caught live
+        by the user. Fixed with a `GEMINI_MODELS` list curated from the real
+        `ListModels` API response for this API key (not guessed) - trimmed the dozens
+        of TTS/image/robotics/music/research models down to the general-purpose
+        text/coding family; the effort picker is hidden for Gemini too, since no
+        reasoning-effort equivalent exists on this CLI.
+      - Replaced the Session tab's tap-to-cycle agent switcher with a dropdown
+        (`DropdownMenu`) - cycling one tap at a time through 2 agents was fine, but
+        became genuinely tedious at 4 (up to 3 extra taps to land on the one you
+        want).
+    - Live-verified end-to-end against the real deployed service across multiple
+      rounds: approval gate (a real deny blocking a real tool call, correctly tagged
+      `<gemini>`), headless prompt completion, token-usage tracking and exposure, a
+      single non-duplicate done notification, and two-turn session resume (a word
+      told in message 1 correctly recalled in message 2, purely via the persisted
+      `session_id` and the real deployed `/hook/send-prompt` path).
+    - **Not yet done**: `AethelHook.iss`/`dist\install_hooks.ps1` were updated with
+      Gemini's hook files and settings.json bootstrap section but never exercised via
+      an actual `ISCC.exe` rebuild + fresh-machine install test. Android's debug APK
+      is installed and live-verified on the dev phone; no signed release build yet.
+33. **Added GitHub Copilot CLI as a 5th agent (2026-07-22), then deliberately scaled
+    back to approval-gate-only after weighing the cost of managing its own credential.**
+    Distinct hook mechanism again: standalone `*.json` files dropped into
+    `~/.copilot/hooks/`, each independent (no shared settings file to merge into,
+    unlike Claude/OpenCode/Gemini) - `permissionRequest` (the gate, `{"behavior":
+    "allow"|"deny","message":"..."}`) and `agentStop` (done notification) wired via
+    `RestoreCopilotHooks()`/`FindCopilotHooksDir()`.
+    - **Copilot CLI's hook timeout fails OPEN (allows the action) on timeout/error -
+      the opposite of every other agent here**, which all fail closed/deny. Confirmed
+      from Copilot's own docs, not guessed - `on_permission_request.ps1`'s 90s
+      phone-wait budget is sized to always finish comfortably under the declared
+      `timeoutSec: 100`, specifically to avoid ever hitting that fail-open path.
+    - **Fine-grained PATs only** - classic tokens (`ghp_...`) are explicitly
+      unsupported by Copilot CLI's own docs; only a fine-grained PAT with the
+      "Copilot Requests" permission works. Headless auth needs
+      `COPILOT_GITHUB_TOKEN`/`GH_TOKEN`/`GITHUB_TOKEN` env vars pointing at one.
+    - **Full headless Session Access was built and live-verified working**
+      (`RunHeadlessCopilotPromptAsync`, `CopilotProjectSessions`, token stored in
+      `C:\ProgramData\AethelHook\copilot_token.txt`, ACL-restricted the same way as
+      `api_token.txt`) - then **deliberately removed** once the user weighed the
+      real tradeoff: Copilot CLI's own documented auth mechanism is Windows
+      Credential Manager (DPAPI, per-logon-session), which the LocalSystem-run
+      service can never read regardless of any env-var workaround, so a real
+      long-lived Session Access setup would mean managing a PAT by hand indefinitely
+      - not worth it for a feature the user wasn't sure they'd use. Scope trimmed to
+      match Antigravity's own approval-gate-only precedent (gotcha #26/#29):
+      `permissionRequest` + `agentStop` only, `postToolUse` (Session Access's own
+      mid-turn heartbeat) dropped entirely, `/hook/send-prompt` now explicitly
+      rejects `agent:"copilot"` with a clear error instead of silently 404ing.
+    - **`agentStop`'s own payload has no response-text field at all** - confirmed
+      live via `hook_debug_copilot.log`: `{sessionId, timestamp, cwd,
+      transcriptPath, stopReason, stop_hook_active}`, unlike Claude's Stop
+      (`last_assistant_message`) or Gemini's AfterAgent (`prompt_response`). The
+      reply only exists in the transcript file at `transcriptPath` - a JSONL event
+      log - as the most recent `{"type":"assistant.message","data":{"content":
+      "..."}}` line. `on_agent_stop.ps1`'s first version guessed 4 wrong field
+      names before this was confirmed and fixed - every phone notification had
+      shown a blank "Finished working" body until then (the same symptom
+      independently traced back to a different root cause for Gemini, see below).
+    - Also hit the same debug-log ACL lockout pattern as gotcha #25 (a SYSTEM-run
+      process had made `hook_debug_copilot.log` inaccessible to the plain
+      interactive user) - not fixed (diagnostic-only, needs elevation), verified
+      the fix correctness instead via a standalone PowerShell test extracting a
+      known transcript value directly.
+    - **Same day, found and fixed the identical "blank summary" bug in Gemini
+      CLI's own `on_after_agent.ps1`** - the user's report that Copilot's summary
+      was blank ("I think this might be the problem for gemini too") was right:
+      Gemini's `AfterAgent` event's real field is `prompt_response`, confirmed via
+      `hook_debug_geminicli.log` - none of the 4 originally-guessed names
+      (`response`/`last_message`/`message`/`text`) had ever matched, so every
+      Gemini done-notification had silently shown "Finished working" too, since
+      the integration shipped (gotcha #32) until this fix.
+34. **Added Devin CLI as a 6th agent (2026-07-22) - approval-gate only, after
+    discovering the actual "Devin IDE" product can't be gated by hooks at all.**
+    "Devin" here needs real disambiguation: the user's installed "Devin IDE" turned
+    out to be a rebranded Windsurf editor (Cognition acquired Windsurf) - its
+    internal ACP-server process logs itself as `chisel`/`windsurf_api_client`, its
+    model picker shows Windsurf's own SWE-1.x model family, and its bundled
+    extension folder is literally `resources\app\extensions\windsurf\devin\`. This
+    is architecturally distinct from the standalone `devin.exe` terminal CLI
+    (Cognition's separate product, documented at the bundled `docs.devin.ai` mirror
+    shipped inside that same extension folder - `share\devin\docs\`, used as the
+    primary source throughout this investigation instead of the live website, since
+    it's guaranteed to match the exact installed version).
+    - **The Devin IDE runs `devin.exe acp` as an editor subprocess (Agent Client
+      Protocol), and ACP mode never fires hooks at all - confirmed live, not
+      theorized.** Wired a real logging-only test hook into
+      `%APPDATA%\devin\config.json`'s `"hooks"` key, confirmed via process
+      start-time that a genuinely fresh ACP process (well after the config edit)
+      was running, triggered a real tool call inside the IDE - zero trace of the
+      hook ever loading anywhere (no log line, no script execution). Devin's own
+      bundled Xcode ACP doc confirms this is by design, not a bug: "Some richer
+      interactions are only available in the standalone CLI" - permission
+      decisions in ACP mode are handed to the connected editor client (the native
+      "Run/Skip" card seen in the IDE), the same way Xcode's own "Agents >
+      Permissions" settings own it there. Same shape of dead end as Cursor's own
+      hooks (rough/beta, unclear headless support) - a real hooks feature that
+      doesn't reach the actual product surface most users would want gated.
+    - **The standalone terminal CLI's hooks are real and adversarially unbypassable
+      - confirmed live.** `.devin/hooks.v1.json` / `%APPDATA%\devin\config.json`'s
+      `"hooks"` key supports `PreToolUse` (fires before every tool call,
+      unconditionally, confirmed even under `--permission-mode dangerous` - Devin's
+      most permissive "auto-approve everything" mode) and `PermissionRequest`
+      (fires only when the built-in permission system would prompt - doesn't fire
+      under `dangerous` mode, since nothing needs prompting there). `PreToolUse`
+      alone is enough for the gate. Adversarial test: armed a hook that always
+      returns `{"decision":"block","reason":"..."}`, ran `devin -p "run git status"
+      --permission-mode dangerous` - the agent received "Error: A tool was
+      rejected by the user" and the real command never ran. A stdout JSON
+      `{"decision":"block"}` + exit 0 blocks; no output allows. **Devin's hook
+      timeout fails OPEN on timeout/error, the same danger as Copilot's hook** -
+      `on_pre_tool_use.ps1`'s 90s phone-wait budget stays under the declared
+      `"timeout": 100`.
+    - **Getting the standalone CLI usable at all took several real, live-only-
+      discoverable steps**, none guessable from `--help` alone:
+      1. `devin auth login`'s interactive TUI (and the git-provider-connect wizard
+         on first run) read the Windows console directly, bypassing piped stdin
+         entirely - redirecting stdin (`< /dev/null`) or piping answers had zero
+         effect, confirmed live. Both had to be completed once by the user in a
+         real interactive terminal (`devin auth login`, then `devin setup`).
+      2. This dev machine's `AppData\Roaming` has case-sensitivity enabled on one
+         specific directory (rare - likely WSL/dev-mode interop) - `devin` and
+         `Devin` are two genuinely different folders here, and `devin.exe` itself
+         was confirmed live to write to whichever casing already existed (its
+         login flow wrote `org_id` into the capitalized `Devin\config.json`, not
+         the docs' literal lowercase). `FindDevinConfigPath()` resolves by
+         scanning for whichever casing already exists on disk, falling back to
+         the documented lowercase only if neither does - correct on both this
+         machine and a normal case-insensitive one.
+      3. A PATH update from installing the standalone CLI (`irm
+         https://static.devin.ai/cli/setup.ps1 | iex`, the officially documented
+         Windows install method) doesn't propagate to already-open terminal
+         windows/tabs, even brand-new ones spawned from an already-running host
+         process - confirmed live via `[Environment]::GetEnvironmentVariable(...,
+         "User")` showing the new entry while `$env:Path` in a fresh child process
+         still lacked it. Fix for an open window: `$env:Path =
+         [Environment]::GetEnvironmentVariable("Path","Machine") + ";" +
+         [Environment]::GetEnvironmentVariable("Path","User")`.
+    - **Devin CLI reads and executes Claude Code's own `.claude/settings.json`
+      hooks by default** (`read_config_from.claude`, one of several tool-config
+      "import" flags documented at `reference/configuration/read-config-from.mdx` -
+      also imports CLAUDE.md/skills/MCP servers from Claude Code, enabled by
+      default) - **found live via a real symptom**: an interactive `devin` session
+      finishing a turn produced a phone notification titled "Claude Code finished"
+      with a blank body, even though no Claude Code session was involved. Root
+      cause: Claude's own `on_agent_done.ps1` (Stop hook) doesn't check which tool
+      actually invoked it, and Devin's own `Stop` event payload
+      (`{"hook_event_name":"Stop","session_id":"<word-pair>",...}`, no
+      `transcript_path`) is structurally different from Claude's own Stop payload
+      (which always carries `transcript_path`) - so the script ran, found nothing
+      to summarize, and sent a blank notification labeled as Claude Code's own.
+      Checked whether this also caused duplicate/wrong approval prompts (Claude's
+      `PreToolUse` re-firing for Devin's own tool calls) - confirmed it does NOT:
+      Claude's hooks match case-sensitive tool names (`Bash`/`Edit`/`Read`), Devin's
+      are lowercase (`exec`/`edit`/`read`), so they never collide; only the
+      matcher-less `Stop` event was affected. Fix: `on_agent_done.ps1` now skips
+      sending any notification at all when `transcript_path` is absent from
+      stdin - every genuine Claude Code Stop event always carries it, so its
+      absence means some other Claude-hook-format-compatible tool fired it, not a
+      real Claude Code turn.
+    - **Devin CLI's own `Stop` event carries no response-text field and no
+      transcript-file path at all** (unlike every other agent here) - it stores
+      session history in a SQLite database (`sessions.db` under
+      `%APPDATA%\devin\cli\`, confirmed in WAL mode via the accompanying
+      `-wal`/`-shm` files) instead of a JSONL transcript. Added a real done-
+      notification anyway per explicit user request: a companion
+      `extract_summary.py` (Python's stdlib `sqlite3`, no extra dependency) queries
+      `message_nodes.chat_message` for the most recent `role=="assistant"` row for
+      the given `session_id` - confirmed live this works correctly while
+      `devin.exe` still has the database open (WAL mode allows concurrent readers)
+      and is fast (~0.2s, dominated by interpreter startup). `on_stop.ps1` calls it
+      with a bounded 5s wait (`Process.WaitForExit`, killed on timeout) and
+      degrades gracefully to a plain "Devin CLI finished" notification with no
+      summary if Python isn't on PATH at all - a real, disclosed limitation for any
+      install without Python, not a silent failure. **Never emits a `decision`
+      field on stdout** - `Stop` is one of the events that can legitimately block
+      ("prevent premature stopping" per Devin's own docs), and a stray block here
+      would risk the same doom-loop class of bug already hit and fixed for OpenCode
+      (gotcha #28).
+    - Live-verified end-to-end against the real deployed API and phone across
+      multiple rounds: `PreToolUse` approval gate (both `allow_once` and a real
+      phone `deny` genuinely blocking `whoami`), and the Stop-hook notification
+      with a real extracted summary ("AethelHook summary test successful",
+      confirmed received on the phone).
+    - **Scope at the time this shipped**: approval-gate + done-notification only,
+      no headless Session Access - the standalone CLI's own credential setup
+      (separate `devin auth login`, independent of the Devin IDE's own
+      Windsurf-API-key auth) plus the ACP-mode gap made this the pragmatic cut.
+      `IsDevinCliGatewayActive` + `/devincli/gateway/activate`/`deactivate` + an
+      Android toggle (`MainActivity.kt`, `AppPrefs.kt`, `BootReceiver.kt`) shipped
+      here. **Superseded the same day** - see gotcha #35: once the user asked
+      directly whether Devin supports a headless feature, Session Access was
+      added after all (the credential concern didn't apply the same way it did
+      for Copilot - the standalone CLI's own file-based `devin auth login` is
+      reachable, unlike Copilot's Credential-Manager-only auth).
+35. **Added Devin CLI Session Access the same day as gotcha #34, after the user asked
+    directly whether Devin supports a headless feature.** Full feature parity with
+    Claude/Codex/OpenCode/Gemini's own Session Access, but two genuinely new
+    techniques were needed and two real bugs were hit and fixed along the way.
+    - **`-p` mode has no machine-readable output at all** - unlike the other four
+      agents (JSON, streaming events, or both), Devin's headless stdout is a single
+      plain-text blob with no session id anywhere in it. Reusing the same technique
+      already built for the done-notification's summary (gotcha #34's
+      `extract_summary.py`), a new companion `find_latest_session.py` queries
+      Devin's own `sessions.db` directly (`sessions` table, `working_directory`
+      column matched against the exact cwd string, newest `last_activity_at` wins)
+      to capture the just-created/just-resumed session id after every headless run -
+      `DevinCliProjectSessions` (a new per-directory dictionary, same shape as the
+      other four) is populated from that, not from anything CLI-reported.
+    - **`-p` mode never exits on its own after printing its final response** -
+      confirmed live across every test, a clean exit code was never observed
+      (similar in spirit to OpenCode's own non-exiting quirk, gotcha #28, but with
+      no streaming event to detect "this is the real final answer" the way
+      OpenCode's `step_finish` gave for free). Fix: `RunHeadlessDevinCliPromptAsync`
+      reads stdout incrementally and kills the process once output has arrived and
+      stayed unchanged for 8 seconds (stdout is written essentially atomically once
+      generation completes - confirmed live, no partial/trickling output ever
+      observed - so this adds minimal latency in the normal case), backstopped by a
+      generous 900s hard ceiling for a genuine hang.
+    - **Real bug #1 - resume silently never worked on the first attempt.** A live
+      two-message test ("say pong" then "what was the last word I asked you to
+      say?") produced two entirely separate Devin sessions instead of one
+      continuing conversation, even though manually running `devin -r <id> -p
+      "..."` in a terminal resumed correctly. Root cause: `find_latest_session.py`
+      is spawned directly by the LocalSystem-run API service, NOT as a child of
+      `devin.exe` the way `on_stop.ps1`/`extract_summary.py` are (those inherit
+      devin.exe's own overridden `APPDATA` down the process tree) - so its
+      `%APPDATA%`-expansion fallback silently resolved to LocalSystem's own empty
+      profile and the query always found nothing (confirmed live: exit code 0,
+      empty stdout, every single time). Fix: `RunHeadlessDevinCliPromptAsync` now
+      passes the fully-resolved `sessions.db` path as an explicit argument
+      (computed from the same `profileDir` already used for the env-var overrides
+      on the main `devin.exe` process), never relying on the script's own
+      environment-variable expansion when invoked this way. Live-verified after the
+      fix: a real two-message conversation (session id `ribbon-jeep`) correctly
+      recalled "Banana" from message 1 in message 2.
+    - **Real bug #2 - the reply text never appeared in the phone's chat despite
+      Session Access otherwise working perfectly.** Found via direct user report
+      after the resume fix above. Root cause: `SessionActivity.kt`'s chat renderer
+      only adds a bubble on a `prompt_result` WS event for the FAILURE case - on
+      success, it assumes the reply text already arrived as its own bubble via a
+      `session_update` event (the other four agents each have some kind of
+      mid-turn/PostToolUse-equivalent heartbeat hook that streams this). Devin CLI
+      has no such heartbeat hook at all (only `PreToolUse` for the gate and `Stop`
+      for the done-notification), so `session_update` never fires for it and the
+      assumption silently failed - the reply existed (confirmed in `api.log` and in
+      the push notification) but no chat bubble was ever created. Fix: the
+      success-path condition now also fires for `agent == "devincli"` specifically,
+      leaving the other four agents' existing behavior (and their real
+      `session_update` streaming) untouched.
+    - Live-verified end-to-end through the real deployed API for both fixes
+      together: resumed conversation recall correct, and the reply text now
+      genuinely visible as a chat bubble in the Sessions tab, confirmed directly by
+      the user on their own phone.
+36. **Two small Android UI bugs found and fixed together (2026-07-26), both live-
+    verified via a real triggered popup rather than waiting for a real agent event.**
+    - **Status bar icon color never actually tracked AethelHook's own in-app theme
+      toggle.** `enableEdgeToEdge()` is called once, with no arguments, in each of
+      `MainActivity`/`ApprovalActivity`/`QuestionActivity`/`PlanReviewActivity`'s
+      `onCreate` - which auto-picks status/nav-bar icon color from the **system-wide**
+      dark-mode setting at that single point in time, never from the app's own
+      persisted `AppPrefs.getDarkMode()` value, and never again afterward. So flipping
+      AethelHook's in-app light/dark switch (which can legitimately disagree with the
+      phone's system theme) left the status bar icons stuck wrong-colored - and even a
+      device whose system theme matched at launch would drift out of sync the moment
+      the in-app switch was flipped, since `MainActivity`'s `isDark` is separate live
+      Compose state that `enableEdgeToEdge()` is never re-consulted for. Fix: explicit
+      `WindowCompat.getInsetsController(window, window.decorView).isAppearanceLightStatusBars
+      = !isDark` (+ nav bar) in all four activities, computed from the same
+      `AppPrefs`/Compose `isDark` value already driving `AethelHookTheme`;
+      `MainActivity` wraps it in `LaunchedEffect(isDark)` since its theme can change
+      live post-launch, the three single-purpose popup activities set it once since
+      their `isDark` never changes mid-lifecycle.
+    - **TTS read-aloud voice (added 2026-07-19) still sounded robotic** despite
+      already picking the highest-`quality`-tier installed voice. Root cause:
+      Android's `Voice.quality` enum is self-reported by the engine and isn't a
+      reliable proxy for "sounds natural" - Google's own TTS engine reports a
+      HIGH/VERY_HIGH tier for its on-device compact voices too, which remain audibly
+      synthetic next to that same engine's network-backed (cloud) voices.
+      `Voice.isNetworkConnectionRequired()` is the real signal for "this is the good
+      one." Fix: voice selection now sorts network-required voices ahead of local
+      ones (falling back to local-only when `ConnectivityManager` reports no
+      internet, so it never picks a voice that would then silently fail to
+      synthesize offline), before breaking ties by quality tier same as before.
+    - **Live-verified together**: rebuilt (`assembleDebug`), reinstalled via
+      `adb install -r`, then triggered a real summary popup directly via
+      `adb shell am start -n com.aethelhook.app/.MainActivity --es summary_title '...'
+      --es summary_body '...'` (same technique as the original 2026-07-19 TTS
+      build-and-verify pass) rather than waiting for a real agent-done event. Hit one
+      small tooling snag worth remembering: passing multi-word `--es` extras as
+      separate quoted bash arguments got mangled by the bash-to-Windows-adb.exe-to-
+      Android-shell triple quoting hop (a stray word leaked out as a bogus package
+      token - `pkg=Voice` - silently corrupting the intent extras and just bringing
+      the existing task forward instead). Fixed by wrapping the *entire*
+      `am start ...` command as a single string argument to `adb shell`, so only
+      Android's own shell parses the embedded single-quotes, not the Windows/bash
+      layers in between. User confirmed on-device: status bar now switches instantly
+      with the theme toggle, and the new voice selection "is perfect."
+37. **Investigated adding "OpenClaw" as a 7th gated agent (2026-08-02) - dropped after
+    live testing found its approval hook doesn't see the tool calls that matter.**
+    OpenClaw (`docs.openclaw.ai`, `github.com/openclaw/openclaw`) is not a coding CLI
+    like the other six - it's a self-hosted gateway/daemon that connects chat platforms
+    (Discord, Slack, Telegram, etc.) to underlying coding agents, with its own
+    plugin/hook system. Confirmed live, installed via `npm install -g openclaw@latest`
+    (required bumping this machine's Node from 24.11.1 to 24.18.1 via
+    `winget install OpenJS.NodeJS.LTS` - OpenClaw hard-fails at startup on anything
+    outside `>=22.22.3 <23 || >=24.15.0 <25 || >=25.9.0`, not just an npm warning):
+    - The real approval hook is `before_tool_call` (`api.on("before_tool_call", handler,
+      {timeoutMs})`), confirmed via the installed package's own `.d.ts` files (ground
+      truth over docs, which gave inconsistent framing across two separate fetches of
+      the same page). Returning `{block: true, blockReason}` after `await`ing custom
+      async logic inside the handler is a real, typed, supported pattern - the design
+      this integration would have used, mirroring `.opencode\hooks\aethelhook-plugin.js`.
+    - Plugin registration is NOT a bare file path in `plugins.load.paths` (contrary to
+      what the docs summary suggested) - it must be an npm-package-shaped directory
+      containing `openclaw.plugin.json` (a manifest OpenClaw reads *before* executing
+      any plugin code) plus a `package.json` with an `"openclaw": {"extensions":
+      [...]}` field pointing at the real entry file. A bare file path fails startup
+      with `plugin manifest not found`.
+    - Conversation-content hooks (`agent_end`, `before_agent_finalize` - the ones that
+      would carry final-reply text for a done-notification, `before_agent_finalize`
+      conveniently exposing `lastAssistantMessage` directly) are blocked for any
+      non-bundled plugin by default - confirmed via `openclaw plugins inspect <id>
+      --runtime --json`'s diagnostics, requiring an explicit
+      `plugins.entries.<id>.hooks.allowConversationAccess=true` opt-in most docs pages
+      never mention.
+    - **The actual dealbreaker**: onboarding's own recommended default (`--auth-choice
+      anthropic-cli`, reusing this machine's existing Claude Code login) wires the
+      agent to the `claude-cli` backend, which spawns a real external Claude Code CLI
+      process over the Agent Client Protocol (ACP). Two live adversarial tests proved
+      `before_tool_call` never fires for that path at all - a test plugin returning
+      `{block:true}` after a 5s await had zero effect on either a real `whoami` shell
+      command (genuinely executed, printed "Moloi") or a real live web search
+      (genuinely executed, returned live cited weather data) - confirmed via
+      `hook_debug.log` showing the plugin's own `register()` call but never a single
+      `FIRED` line. Root cause, per OpenClaw's own docs: an ACP-spawned harness "owns
+      its provider login, model catalog, filesystem behavior, and native tools" - so
+      Claude's own Bash/WebSearch tools execute entirely inside that external process,
+      invisible to OpenClaw's plugin hook layer. **The exact same dead-end shape as
+      gotcha #34's Devin-IDE ACP investigation**, just for OpenClaw+Claude instead of
+      Devin - discovered here specifically because this project's own "verify before
+      building" discipline caught it via a real adversarial test rather than assuming
+      the hook worked from docs alone.
+    - `before_tool_call` would likely still gate OpenClaw's own built-in agent loop
+      (its native `web_search`/`memory_search`/etc. tool set) if configured with a
+      direct provider API key instead of a CLI backend - genuinely unconfirmed, no key
+      was available in this session to test it, and acquiring one is a real decision
+      (cost, provider choice) not made unilaterally.
+    - Presented three options to the user (get an API key and verify the native-tool
+      path; ship knowing the gate only covers OpenClaw's own built-in tools, not any
+      CLI-backend-delegated coding work; or drop it entirely) - **user chose to drop
+      it**, the same call made for Antigravity (gotcha #29) when a fundamental gap
+      showed up in exactly the case people would actually use. No AethelHook repo files
+      were touched - the entire investigation happened against a standalone OpenClaw
+      install (global npm package) and its own `~\.openclaw\openclaw.json`/workspace,
+      cleaned up (test gateway process killed) at the end of the session. OpenClaw
+      itself was left installed on this dev machine (harmless, standalone) in case a
+      future session revisits this with a direct API key.
 
 ## Key file paths
 
@@ -794,6 +1257,9 @@ security work since done - see README.md instead).
 | `install.ps1` | Redeploys the live dev service + Tray app (elevated, run by user) |
 | `AethelHook.iss` / `dist\install_hooks.ps1` | End-user installer (Inno Setup) + first-install hook bootstrap |
 | `.codex\hooks\notify_async.ps1` (+ `dist\hooks\codex\`, live) | Detached process launched by `on_agent_done.ps1` to actually POST the Stop-hook notification - see gotcha #15 |
+| `.geminicli\hooks\*.ps1` | Dev copies of Gemini CLI hooks (sync to `dist\hooks\geminicli\` + `C:\ProgramData\AethelHook\hooks\geminicli\` after editing) - see gotcha #32 |
+| `.copilot\hooks\*.ps1` | Dev copies of Copilot CLI hooks (sync to `dist\hooks\copilot\` + `C:\ProgramData\AethelHook\hooks\copilot\` after editing) - see gotcha #33 |
+| `.devincli\hooks\*.ps1`, `.devincli\hooks\extract_summary.py`, `.devincli\hooks\find_latest_session.py` | Dev copies of Devin CLI's standalone-CLI-only hooks + its two Python/SQLite helpers (summary extraction, Session Access resume lookup) - sync to `dist\hooks\devincli\` + `C:\ProgramData\AethelHook\hooks\devincli\` after editing - see gotchas #34/#35 |
 | `app\...\MainActivity.kt`, `SessionActivity.kt`, `AethelHookWebSocket.kt` | Android - nav/dashboard, Session Access tab, WS client |
 | `AethelHook.Tray\WindowsHello.cs` | Windows Hello gate for "Pair New Device" - raw WinRT vtable interop, see gotcha #24 |
 
@@ -821,6 +1287,212 @@ dotnet publish AethelHook.Tray\AethelHook.Tray.csproj -c Release -r win-x64 --se
 significant work session, the same way you'd update any other session/handoff file.
 Older entries can be trimmed once they're no longer relevant; this isn't a full
 changelog (see git history / memory for that), just enough to orient the next session.*
+
+**As of 2026-08-02 (OpenClaw investigated as a 7th agent, dropped after live testing -
+no repo changes made):**
+
+- **Full detail in gotcha #37 above.** Short version: OpenClaw turned out to be a
+  chat-platform gateway/daemon wrapping other coding CLIs, not a coding CLI itself -
+  clarified with the user up front that the actual ask was "gate OpenClaw's own tool
+  calls via its own plugin hook system" (the OpenCode-shaped path), not "let OpenClaw
+  drive our existing hooks" (the Devin-IDE-ACP-shaped path).
+- Installed OpenClaw locally, upgraded this machine's Node to 24.18.1 (was 24.11.1 -
+  OpenClaw hard-requires it), and did a real live-fire investigation before writing any
+  integration code, per this project's standing "verify before building" discipline.
+  Found the real hook (`before_tool_call`, confirmed via the installed package's own
+  `.d.ts` files, not docs alone) and a real plugin-manifest requirement
+  (`openclaw.plugin.json` + `package.json`'s `openclaw.extensions`, not a bare file
+  path) neither of which matched the initial docs-based research.
+- **Adversarially tested the approval gate with a throwaway plugin before building the
+  real one** - a "5s await then always deny" handler had zero effect on a real shell
+  command or a real live web search, because onboarding's own recommended default
+  (reusing an existing Claude Code login) routes through an externally-spawned Claude
+  Code CLI process (ACP) whose native tools are invisible to OpenClaw's plugin layer
+  entirely. Same shape of finding as gotcha #34's dead-end Devin-IDE investigation.
+- Presented the finding and three options to the user (verify the one path that might
+  still work, given a direct API key; ship with a disclosed partial gate; or drop it) -
+  **user chose to drop it**, same call as Antigravity (gotcha #29). No `AethelHook.API`,
+  Android, or installer files were touched this session - OpenClaw itself stays
+  installed standalone on this dev machine (global npm package, harmless) in case a
+  future session revisits this with a direct provider API key to test the one path
+  that wasn't ruled out.
+
+**As of 2026-07-31 (Settings > About links, light-mode default, and a Report an
+Issue button shipped; signed release APK rebuilt and installed):**
+
+- **About card** (`MainActivity.kt`'s `SettingsScreen`) now has three tappable
+  `LinkRow`s (label + external-link icon, `Intent.ACTION_VIEW`) above the
+  copyright line: Website (`https://aethelst8.com`), GitHub
+  (`https://github.com/aethelst8/aethelhook`), and Privacy Policy
+  (`https://aethelst8.com/privacy/`).
+- **Added a "Report an Issue" button** (`GlassButton`, amber, bug icon) directly
+  above the About card, opening
+  `https://github.com/aethelst8/aethelhook/issues/new` in the browser.
+- **Light mode is now the default theme for a fresh install** -
+  `AppPrefs.getDarkMode()`'s fallback flipped from `true` to `false`
+  (`AppPrefs.kt:270`). Existing installs with an explicit saved preference are
+  unaffected; this only changes the value returned when no preference has ever
+  been written.
+- **Rebuilt and installed both a debug and a signed release build this
+  session**, each requiring an uninstall first due to the standing
+  debug/release signing-key mismatch (see the 2026-07-09/07-11 distribution
+  entries below) - phone needed a fresh QR re-pair after the final release
+  install. **Android version not bumped** for this change (no explicit request
+  to do so this session, unlike prior UI-fix passes).
+- **Not yet done**: `aethelst8.github.io`'s own "Report an Issue"-equivalent
+  link (if any) and the app's own GitHub release notes weren't touched - this
+  was scoped to the on-device Settings page only.
+
+**As of 2026-07-26 (status bar theme sync + TTS voice quality fixes shipped; Heard
+competitor researched, iOS web client design explored then explicitly deferred):**
+
+- **Full detail in gotcha #36 above.** Short version: fixed two small but real
+  Android bugs - the status bar's icon color only ever tracked the system-wide dark
+  mode setting once at launch, never the app's own in-app theme toggle; and the TTS
+  read-aloud voice (from the 2026-07-19 session) still sounded robotic because
+  Android's self-reported quality tier isn't a reliable signal on its own - voice
+  selection now explicitly prefers network-backed (cloud) voices over local ones.
+  Both live-verified via a real triggered summary popup (`adb shell am start` with
+  test extras); user confirmed "its perfect."
+- **Researched a Product Hunt competitor, "Heard"** (heard.dev,
+  github.com/heardlabs/heard) at the user's request. Turned out to be a materially
+  different product than initially assumed - it's a macOS-only voice-narration
+  companion (TTS for agent output), not an approval gateway; confirmed via the OSS
+  repo's full source (no QR/phone/mobile code anywhere in the public repo) plus the
+  live site. The phone/QR feature the user had actually seen is real but paywalled
+  behind their "Power" tier (private beta, invite-only) - "Heard Mobile" is a
+  **mobile web page** reached via a session-scoped, auto-expiring QR/pairing link,
+  not a native app, which is why no app-store listing exists for it. Voice/approval
+  interaction there is push-to-talk (spoken commands), not discrete Allow/Deny
+  buttons, and it's almost certainly cloud-relayed rather than direct-to-device.
+- **Explored building an equivalent iOS web client for AethelHook** (no native iOS
+  app exists yet), walked through the real architecture given AethelHook's existing
+  pairing/TLS model: browsers can't do certificate pinning (unlike Android's
+  `PinnedTls.kt`), so a browser client hitting the self-signed HTTPS cert needs
+  either a manual "trust this cert"/`.mobileconfig` step or a Tailscale-provisioned
+  real cert (works only when phone+PC share a tailnet); iOS's stock Camera app also
+  can't scan the existing raw-JSON QR payload at all (only auto-opens URL-shaped QR
+  codes), so a second QR format would be needed; and a plain web page can't hold a
+  background connection or wake a locked phone without real Web Push (iOS 16.4+,
+  requires "Add to Home Screen"). **User decided to defer this entirely for now**
+  rather than commit to a specific combination of those tradeoffs - no code written,
+  nothing changed in the app/API for this.
+
+**As of 2026-07-22, later the same day (Devin CLI gained full Session Access,
+superseding its own approval-gate-only scope decision from earlier that day):**
+
+- **Full detail in gotcha #35 above.** Short version: the user asked directly
+  whether Devin supports a headless feature, confirmed it does (already
+  live-verified via `-p` mode throughout gotcha #34's own build-and-verify pass),
+  and asked for Session Access to be added - the credential concern that kept
+  Copilot approval-gate-only didn't apply the same way (Devin's standalone CLI
+  auth is file-based, reachable from a LocalSystem-spawned process).
+- **Two genuinely new techniques needed**, since Devin's `-p` mode has no
+  machine-readable output at all (plain text only) and never exits cleanly on its
+  own: a new `find_latest_session.py` queries `sessions.db` directly to capture a
+  resumable session id (mirroring the done-notification's own SQLite-summary
+  technique), and `RunHeadlessDevinCliPromptAsync` uses an idle-timeout-then-kill
+  strategy instead of awaiting a clean process exit.
+- **Two real bugs found via live testing, both fixed same-session**: (1) resume
+  silently never worked on the first attempt - `find_latest_session.py` is spawned
+  directly by the API service rather than as a child of `devin.exe`, so it never
+  inherited the real user's overridden `APPDATA` and always queried LocalSystem's
+  own empty profile; fixed by passing the resolved db path explicitly instead of
+  relying on environment-variable expansion. (2) the reply text never showed up as
+  a chat bubble on the phone despite everything else working - the chat UI assumes
+  a `session_update` heartbeat already added a bubble on success, which is true
+  for the other four agents but never true for Devin CLI (no such heartbeat hook
+  exists for it); fixed by special-casing `agent == "devincli"` in
+  `SessionActivity.kt`'s existing success/failure branch.
+- Live-verified end-to-end, twice - once for the resume fix (a real two-message
+  conversation correctly recalling "Banana"), once for the chat-bubble fix
+  (confirmed directly by the user on their own phone) - through the real deployed
+  API both times, not a standalone CLI test.
+
+**As of 2026-07-22 (Copilot CLI and Devin CLI added as 5th/6th agents, both
+approval-gate-only; Gemini/Copilot summary-notification bugs fixed; Claude Code
+cross-contamination bug found and fixed):**
+
+- **Full detail in gotchas #33 (Copilot) and #34 (Devin CLI) above.** Short version:
+  both new agents got a full build-and-verify pass, then a deliberate scope cut to
+  approval-gate-only (+ a plain done-notification) once the real cost of Session
+  Access became clear for each - Copilot CLI's headless auth needs Windows
+  Credential Manager (unreachable to the LocalSystem service), and Devin's actual
+  "Devin IDE" product turned out to run in ACP mode, which never fires hooks at all
+  (only the separately-installed standalone terminal CLI can be gated).
+- **Real, hard-won findings**: Copilot's hook timeout fails OPEN (not closed) on
+  error, same as later confirmed for Devin's own hook; the user's own installed
+  "Devin IDE" is a rebranded Windsurf editor (Cognition acquired Windsurf), a
+  genuinely different product from the standalone `devin.exe` CLI despite the
+  shared name; and Devin CLI reads Claude Code's own `.claude/settings.json` hooks
+  by default (`read_config_from.claude`), which was silently cross-firing Claude's
+  Stop hook for every Devin session and sending a mislabeled, blank "Claude Code
+  finished" notification - found via a real user report and fixed by having
+  `on_agent_done.ps1` skip entirely when `transcript_path` is absent (every real
+  Claude Stop event always carries it).
+- **Two done-notification "blank summary" bugs found and fixed the same day**, both
+  from field names that were guessed rather than confirmed when each integration
+  first shipped: Gemini's `AfterAgent` event's real field is `prompt_response` (not
+  any of the 4 originally-guessed names), and Copilot's `agentStop` event has no
+  text field at all - the real reply only exists in a separate transcript file at
+  `transcriptPath`. Both traced from a single user report ("I think this might be
+  the problem for gemini too") and confirmed via each agent's own debug log before
+  writing a fix, not guessed again.
+- **Devin CLI's own done-notification needed a genuinely new technique**: Devin
+  stores session history in SQLite (`sessions.db`), not a JSONL transcript like the
+  other five agents, so there was no existing pattern to reuse. Added a companion
+  `extract_summary.py` (Python's stdlib `sqlite3`, confirmed already installed on
+  this machine, no new dependency shipped) that reads the last assistant message
+  directly from the database - works safely alongside the still-running `devin.exe`
+  process (WAL mode) and degrades gracefully (plain notification, no summary) if
+  Python isn't present at all.
+- **Also researched this session, not built**: Cursor CLI's hooks (put on hold -
+  rough/beta, unclear headless-mode support, later confirmed as the same class of
+  gap Devin's IDE turned out to have) and Amazon Q Developer CLI (flagged as the
+  natural next candidate, not yet investigated live).
+- Live-verified end-to-end against the real deployed service and phone across many
+  rounds: Copilot's approval gate + done-notification with a real transcript-file
+  summary; Devin CLI's `PreToolUse` gate adversarially confirmed unbypassable even
+  under its most permissive `dangerous` mode, plus its own done-notification with a
+  real SQLite-extracted summary; and the Claude Code Stop-hook fix confirmed via
+  two subsequent real Devin sessions correctly producing no notification at all
+  (silent, as intended) while a genuine Claude Code turn still notified normally.
+- **Not yet done**: no installer rebuild (`ISCC.exe`) + fresh-machine test covering
+  either new agent; no signed Android release build (still debug APK only); Amazon
+  Q Developer CLI not yet researched live.
+
+**As of 2026-07-21 (Gemini CLI added as a 4th agent - full feature parity with
+Codex/OpenCode, all live-verified against the real deployed service):**
+
+- **Full detail in gotcha #32 above.** Short version: added Gemini CLI (Google's
+  `@google/gemini-cli`, npm - distinct from Antigravity despite the similar name)
+  with complete feature parity to Codex/OpenCode: approval gate (`BeforeTool` hook,
+  `.geminicli\hooks\`), headless Session Access (`RunHeadlessGeminiPromptAsync`),
+  token-usage tracking, done notifications, an Android gateway toggle, and (added in
+  a same-day follow-up once the user asked for it) session resume.
+- **Real, hard-won findings**: personal Google-account login for the standalone CLI
+  is now dead (Google pushes individuals toward Antigravity CLI instead, June 2026 -
+  the same tool this project already rejected twice), an untrusted project folder
+  silently breaks both tool access and hook execution regardless of `--skip-trust`
+  (fixed via automatic `trustedFolders.json` writes in `TrustGeminiFolder()`), and a
+  `BeforeTool` deny genuinely can't be bypassed even with YOLO mode on - confirmed via
+  a real adversarial test blocking every tool call in one turn, a materially better
+  result than Antigravity's confirmed deny-bypass (gotcha #29).
+- **Six real bugs found and fixed along the way, most predating this integration
+  entirely** - `/hook/token-usage`'s hardcoded agent list, `/hook/session-update`
+  missing an `agent` field (mislabeled OpenCode's own heartbeats too), a duplicate
+  done-notification from wiring one hook to two lifecycle events
+  (`AfterAgent`+`SessionEnd`), `BootReceiver.kt` only ever checking Claude's gateway
+  flag, and two Android UI bugs caught live by the user - a token-chip row layout
+  squeeze (`TokenUsageRow` had no scroll/`maxLines` safety net, fine at 3 chips, broke
+  at 4) and `SettingsSheet.kt` silently falling back to Claude's model list for any
+  agent it didn't recognize by name.
+- Android's Session tab agent switcher changed from tap-to-cycle to a `DropdownMenu` -
+  cycling one tap at a time through 4 agents (was fine at 2) got genuinely tedious.
+- **Not yet done**: an actual installer rebuild (`ISCC.exe`) + fresh-machine install
+  test - `AethelHook.iss`/`dist\install_hooks.ps1` are updated but unexercised beyond
+  this dev machine's own live service and hook file sync. No signed Android release
+  build either, only the debug APK, installed and live-verified on the dev phone.
 
 **As of 2026-07-19 (context-window usage gauge + voice-to-prompt shipped and
 live-verified; a real formula bug found and fixed the same day; notification-dismiss
