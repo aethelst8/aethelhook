@@ -31,5 +31,5 @@ policy at this stage.
 In scope: the PC API (`AethelHook.API`), the Tray app, the Android app, the PowerShell
 hook scripts for each supported IDE, and the installer.
 
-Out of scope: vulnerabilities in Claude Code, Codex, or Antigravity themselves -
-report those to their respective vendors.
+Out of scope: vulnerabilities in Claude Code, Codex, OpenCode, Gemini CLI, GitHub
+Copilot CLI, or Devin CLI themselves - report those to their respective vendors.

@@ -9,10 +9,11 @@
 
 ## What it is
 
-When an AI coding agent - **Claude Code**, **Codex**, or **OpenCode** - wants to run a
-shell command, write a file, or do anything else on your PC, AethelHook routes that
-request to your Android phone first. You get a notification, tap Allow or Deny, and the
-agent proceeds or stops. In real time, from anywhere your phone has a connection.
+When an AI coding agent - **Claude Code**, **Codex**, **OpenCode**, **Gemini CLI**,
+**GitHub Copilot CLI**, or **Devin CLI** - wants to run a shell command, write a file, or
+do anything else on your PC, AethelHook routes that request to your Android phone first.
+You get a notification, tap Allow or Deny, and the agent proceeds or stops. In real time,
+from anywhere your phone has a connection.
 
 AI coding agents are powerful but dangerous by default - they can execute arbitrary
 shell commands, overwrite or delete files, and install packages. Most IDEs show a quick
@@ -20,18 +21,22 @@ shell commands, overwrite or delete files, and install packages. Most IDEs show 
 click through on autopilot. AethelHook forces that decision onto a second device, so
 approving something dangerous takes a deliberate action, not a reflex.
 
-It also lets you send prompts *to* your PC from your phone - kick off a headless
-Claude Code, Codex, or OpenCode run in a known project directory and get the result
-pushed back, without touching the keyboard.
+It also lets you send prompts *to* your PC from your phone for most of these agents -
+kick off a headless run (Claude Code, Codex, OpenCode, Gemini CLI, or Devin CLI) in a
+known project directory and get the result pushed back, without touching the keyboard.
+GitHub Copilot CLI is approval-gate only, with no phone-initiated prompts.
 
 **Note:** this means the Claude Code CLI and its VS Code extension, the Codex CLI and
-IDE, and the OpenCode CLI. It does not work with the regular Claude app or claude.ai -
-those are a different product with no hook mechanism to route through.
+IDE, the OpenCode CLI, the Gemini CLI, the GitHub Copilot CLI, and Devin's standalone
+terminal CLI (not the Devin IDE, which never fires hooks at all). It does not work with
+the regular Claude app or claude.ai - those are a different product with no hook
+mechanism to route through.
 
 ## Features
 
-- **Multi-agent**: Claude Code, Codex, and OpenCode, each via their own native hook
-  mechanism, all routed through the same gateway.
+- **Multi-agent**: Claude Code, Codex, OpenCode, Gemini CLI, GitHub Copilot CLI, and
+  Devin CLI, each via their own native hook mechanism, all routed through the same
+  gateway.
 - **Real-time approval** over a TLS + certificate-pinned WebSocket (LAN or Tailscale) -
   no cloud relay, no third-party push service in the loop.
 - **Five decision options**: allow once, always allow (this project), always allow
@@ -43,9 +48,11 @@ those are a different product with no hook mechanism to route through.
   the phone too, with the full plan text and an option to keep planning with feedback.
 - **Clarifying questions** - `AskUserQuestion` is answered from the phone instead of
   an in-IDE dialog, including multi-select and free-text "Other" answers.
-- **Session Access** - send a prompt from your phone to run headlessly (`claude -p` /
-  `codex exec`) in a known project directory on your PC; each project keeps its own
-  resumable conversation, per agent.
+- **Session Access** - send a prompt from your phone to run headlessly (`claude -p`,
+  `codex exec`, `opencode run`, `gemini -p`, or `devin -p`) in a known project directory
+  on your PC; each project keeps its own resumable conversation, per agent. Not
+  available for GitHub Copilot CLI - its headless auth needs Windows Credential
+  Manager, which the background service can't reach.
 - **Secure device pairing** - a QR code (scanned from a loopback-only page on the PC)
   hands a phone a real, per-device token; no token is ever broadcast over the network.
 - **Approval history**, a phone-managed always-allow list, dark/light mode.
@@ -56,8 +63,8 @@ those are a different product with no hook mechanism to route through.
 |---|---|
 | `AethelHook.API/` | .NET 9 ASP.NET Core service, runs as a Windows Service under LocalSystem. Two listeners: port `5264` (HTTPS, phone-facing - LAN/Tailscale/WAN) and a loopback-only port `5266` (plain HTTP, used only by local hook scripts, the Tray app, and the pairing page). |
 | `AethelHook.Tray/` | WPF tray app - the interactive-user-facing UI for status, gateway toggle, and device pairing (the API service itself can't touch the desktop; see "Windows Session 0" below). |
-| `app/` | Android Kotlin/Jetpack Compose app - Dashboard, Session, History, and Settings tabs. |
-| Hooks | PowerShell scripts per IDE (`.claude/hooks/`, `.codex/hooks/`, `.gemini/hooks/`) that intercept tool calls and route them to the API. |
+| `app/` (not in this repo) | Android Kotlin/Jetpack Compose app - Dashboard, Session, History, and Settings tabs; distributed as a signed APK via GitHub Releases. |
+| Hooks | Per-IDE hook scripts that intercept tool calls and route them to the API - PowerShell for Claude Code (`.claude/hooks/`), Codex (`.codex/hooks/`), Gemini CLI (`.geminicli/hooks/`), GitHub Copilot CLI (`.copilot/hooks/`), and Devin CLI (`.devincli/hooks/`); a JS/TS plugin for OpenCode (`.opencode/hooks/`). |
 
 ```
 Agent wants to run a tool
@@ -131,11 +138,10 @@ hooks, and the Tray app.
 > for a sideloaded app not yet on the Play Store.
 
 **Phone:**
-```bash
-export JAVA_HOME="/c/Program Files/Android/Android Studio/jbr"
-./gradlew.bat assembleRelease
-adb install app/build/outputs/apk/release/app-release.apk
-```
+
+The Android app's source isn't part of this repo. Download the latest signed APK from
+[GitHub Releases](https://github.com/aethelst8/aethelhook/releases/latest) and install
+it (Android will warn about installing from an unknown source - see the note above).
 Open the app, then on the PC open `http://localhost:5266/pair` and scan the QR code
 shown there.
 
@@ -147,12 +153,10 @@ cd AethelHook.API && dotnet build
 
 # Redeploy the live dev service + Tray app (elevated PowerShell)
 .\install.ps1
-
-# Android
-export JAVA_HOME="/c/Program Files/Android/Android Studio/jbr"
-./gradlew.bat assembleDebug
-adb install -r app/build/outputs/apk/debug/app-debug.apk
 ```
+
+The Android app's source is maintained outside this repo; see the note in
+[Installation](#installation) above.
 
 See [CLAUDE.md](CLAUDE.md) for the full technical reference - architecture details,
 hook wiring per IDE, and a running list of non-obvious gotchas hit while building this.

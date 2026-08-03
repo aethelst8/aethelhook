@@ -21,7 +21,8 @@ IDE's hooks are wired, and a running list of non-obvious issues already hit and 
 - Keep PRs focused - one change per PR is easier to review than several bundled
   together.
 - If you touch a hook script, keep the dev copy (`.claude/hooks/`, `.codex/hooks/`,
-  `.gemini/hooks/`), the `dist/hooks/` mirror, in sync - the project has been bitten
-  before by these three drifting apart.
+  `.opencode/hooks/`, `.geminicli/hooks/`, `.copilot/hooks/`, `.devincli/hooks/`) and
+  the `dist/hooks/` mirror in sync - the project has been bitten before by these
+  drifting apart.
 - Explain the *why* in the PR description, not just the *what* - especially for
   anything touching auth, the pairing flow, or file permissions.
