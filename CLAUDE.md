@@ -1244,6 +1244,38 @@ security work since done - see README.md instead).
       cleaned up (test gateway process killed) at the end of the session. OpenClaw
       itself was left installed on this dev machine (harmless, standalone) in case a
       future session revisits this with a direct API key.
+38. **`origin/main`'s entire git history had been silently rewritten and force-pushed at
+    some point to purge `app/` from every commit, including the very first one, and this
+    local clone was never resynced - discovered only when a routine `git push` failed
+    (2026-08-03), while pushing weeks of already-completed but never-committed work
+    (Gemini CLI/Copilot CLI/Devin CLI integration, CLAUDE.md updates).** `git push origin
+    main` was rejected as non-fast-forward. `git merge-base main origin/main` returned
+    completely empty - no common ancestor at all - despite `git log --oneline` on both
+    branches showing an *identical sequence of commit messages* up to a point, just under
+    different hashes. Confirmed via `git ls-tree -r origin/main-initial-commit-hash` that
+    origin's very first commit already had zero files under `app/` - proof the entire
+    history was rewritten (most likely a `git filter-repo --path app/ --invert-paths` or
+    BFG pass run on a separate clone and force-pushed), not just a recent amend. This
+    matches a *different*, incomplete attempt at the same underlying goal found staged-
+    but-uncommitted in this local clone at the start of the same session (a plain
+    `.gitignore` entry + `git rm --cached app/`, a going-forward-only untrack) - two
+    unrelated attempts to solve "keep the Android source out of the public repo," done by
+    different sessions/machines with no shared memory of each other, leaving this clone on
+    stale pre-purge history. Confirmed the rewritten remote had also never gotten the
+    `.gitignore` line added (the purge tool stripped history but didn't touch tracked
+    files going forward). **Do not force-push the stale local branch over this** - that
+    would silently resurrect `app/`'s full history on the public repo, undoing the
+    original purge. Fix instead: create a fresh branch from `origin/main`, cherry-pick
+    only the local-only new commits onto it (a commit that deletes already-absent files
+    just no-ops cleanly on the delete, any real content changes like the missing
+    `.gitignore` line still apply), diff the rebuilt tip against the original local tip to
+    confirm they're content-identical, then fast-forward `main` onto it and push normally
+    - a real Google Play developer account was pending final review the same week, so
+    getting this wrong publicly was not an acceptable risk to gamble on. Lesson for future
+    sessions: `git merge-base` returning nothing combined with matching commit-message
+    sequences at different hashes is the signature of a full history rewrite happening
+    upstream, not genuine divergence - treat it as "replay my commits on their history,"
+    never as "force my history onto theirs."
 
 ## Key file paths
 
@@ -1287,6 +1319,108 @@ dotnet publish AethelHook.Tray\AethelHook.Tray.csproj -c Release -r win-x64 --se
 significant work session, the same way you'd update any other session/handoff file.
 Older entries can be trimmed once they're no longer relevant; this isn't a full
 changelog (see git history / memory for that), just enough to orient the next session.*
+
+**As of 2026-08-04 (weeks of uncommitted work finally pushed to GitHub after a history-
+rewrite discovery, website updated for the 6-agent lineup, and the first Google Play
+Store submission - closed testing published and live-verified):**
+
+- **GitHub was badly out of sync going into this session** - everything from gotcha #32
+  onward (Gemini CLI, Copilot CLI, Devin CLI, the two Android UI fixes, the OpenClaw
+  investigation) had only ever existed in this working tree, never committed. Also found
+  a staged-but-uncommitted `.gitignore`/`git rm --cached app/` from an earlier attempt to
+  stop tracking the Android app source. Sorted into four clean commits (untrack `app/`,
+  the three-agent backend/hooks work, the CLAUDE.md catch-up, README/CONTRIBUTING/
+  SECURITY updated for 6 agents) - then hit the real surprise on push: **see gotcha #38**
+  for the full story of `origin/main`'s entire history having been separately rewritten
+  and force-pushed to purge `app/` from every commit, with this clone never resynced.
+  Resolved by replaying the new local commits onto GitHub's actual current history
+  instead of force-pushing the stale copy back. All pushed and confirmed clean
+  (`git status` matches `origin/main` exactly) as of this writing.
+- **aethelst8.com updated for the same 6-agent lineup**: Hero/Features/Setup copy, the
+  SEO title/meta/OG tags, a regenerated OG image, the Guides index, and the main setup
+  guide got real per-agent subsections for Gemini CLI (npm install, folder-trust caveat)
+  and Devin CLI (standalone-CLI-only install, explicitly distinct from the non-hook-
+  capable Devin IDE) - mirroring the accuracy discipline this repo already applies to its
+  own docs. Also replaced the Demo section's phone dashboard screenshot, which still
+  showed the original 3-agent, pre-redesign UI, with a current one showing all six
+  toggles, once the user provided a fresh capture.
+- **First Google Play Store submission, done live in this session.** Full build/test/
+  submission flow, not just prep:
+  - Built the signed release AAB (`gradlew bundleRelease`, versionCode 7/1.3.0, signed
+    with the existing `aethelhook-release.jks` via `keystore.properties`) - confirmed via
+    the bundle's own `META-INF/AETHELHO.RSA`/`.SF` signature files, not just a successful
+    Gradle exit code.
+  - **Play Store screenshots and the feature graphic were generated with a small
+    Python/Pillow script** (`gen_playstore_screenshots.py`, kept in this session's
+    scratchpad, not the repo - reusable, no external tool/account/watermark), compositing
+    the user's real phone/PC screenshots into a flat device-frame mockup with a headline
+    and subtitle, white background with an indigo accent to match the site's own brand
+    colors. Iterated twice on user feedback (bigger fonts, then a switch from dark to
+    white background) and added two more slides (notification popup, full decision
+    screen) after the first pass. Same script/technique was then reused the same day for
+    a second AethelSt8 app, sastownhub ("SasTown Hub" - a Sasolburg/Zamdela local
+    business and services directory), just swapping the accent color to the app's own
+    gold/yellow brand and writing new headlines against its actual screens.
+  - **Store listing copy was rewritten, not copy-pasted from a ClaudeAI-drafted marketing
+    doc the user had prepared** - that draft undersold Session Access entirely (framed
+    AethelHook as pure "block dangerous actions," missing the phone-to-PC prompting
+    angle), used em dashes (standing project rule against them), overclaimed IDE support
+    for GitHub Copilot and OpenCode (both are CLI-only here), and used the same "Devin/
+    Windsurf" conflation flagged earlier the same day (see below) as if it were settled
+    fact. Rewrote both the short and full description around "remote control" as the
+    lead positioning instead, per explicit user correction that the safety-gate framing
+    alone undersells the product.
+  - **A live naming question got resolved as "don't do it," not "do it differently."**
+    User asked to append "(Windsurf)" to every mention of "Devin," which would have
+    mislabeled the actually-supported standalone CLI as the Windsurf-rebranded product
+    (that's the *unsupported* Devin IDE, per gotcha #34) - flagged the contradiction via
+    `AskUserQuestion` before touching any file, user answered "nevermind" to both
+    clarifying questions, so no rename happened anywhere. Not to be re-attempted without
+    the user explicitly re-raising it.
+  - **Declined a paid closed-testing fulfillment service (primetestlab.com) after
+    fetching and evaluating it directly** rather than guessing - it sells "12 testers"
+    for ~$20 who allegedly install and use the app daily for 14 days, which doesn't match
+    real compensated-labor economics at that price and is exactly the pattern Google's
+    new-account closed-testing requirement exists to filter out. Given the user already
+    had real testers lined up, recommended against it outright - the downside (developer
+    account termination, not just one app's rejection) has no plausible upside here.
+  - **App content declarations completed live**: privacy policy URL, target age (18+
+    only, to avoid Families Policy scope for a developer tool with no child audience),
+    Advertising ID (No - no ad/analytics SDK anywhere in the dependency list), content
+    rating questionnaire, Data Safety form, and a `FOREGROUND_SERVICE_REMOTE_MESSAGING`
+    justification (accurately describing `AethelHookWebSocketService`'s real purpose -
+    real-time approval delivery, not SMS/messaging - plus a required demo video, reusing
+    the user's existing YouTube phone-demo clip).
+  - **Internal testing published instantly** (no Google review needed for that track),
+    live-verified by the user installing and using the real Play-distributed build on
+    their own phone before proceeding.
+  - **Closed testing tester management uses a Google Group
+    (`aethelhook-testing@googlegroups.com`) set to "anyone on the web can ask" to join**,
+    specifically so the user doesn't need to pre-collect testers' email addresses -
+    people request to join via one shared link, get approved with one click, and their
+    email is captured automatically. Same group is reusable for sastownhub's own closed
+    test (or any future AethelSt8 app) rather than needing a separate one per app, since
+    Play Console lets multiple apps' tracks point at the same group.
+  - **Closed testing release submitted and approved in about 5 minutes** - far faster
+    than the "hours to days" expectation set going in. As of this writing: 6 of the
+    needed 12 testers are lined up (the user + 5 named people); the 14-day countdown
+    hasn't started yet since it only begins once testers actually opt in via the track's
+    real opt-in URL (distinct from the Google Group join link) - that's the immediate
+    next action, not yet done as of this writing.
+  - **Decided to run a second app's Play Store submission (sastownhub) in parallel
+    rather than sequentially after AethelHook reaches Production** - the 14-day closed-
+    testing clock is calendar time, not effort time, so there's no benefit to serializing
+    two apps' submissions on the same account. Flagged (with appropriate hedging, since
+    exact policy wording on this point isn't fully certain) that the 12-tester/14-day
+    gate is best assumed to apply per-app rather than per-account, verifiable by checking
+    that app's own Play Console dashboard once created, and that the *same* 12 real
+    testers can satisfy both apps' requirements simultaneously if they opt into both,
+    which is the user's actual plan.
+- **Not yet done**: sastownhub's own Play Console listing/AAB/submission (only its
+  screenshot set exists so far); getting AethelHook from 6 to 12 opted-in testers and
+  actually starting the 14-day clock; the dormant Reddit/Show HN/Product Hunt posts
+  are back on the table as a tester-recruitment channel but still unposted as of this
+  writing.
 
 **As of 2026-08-02 (OpenClaw investigated as a 7th agent, dropped after live testing -
 no repo changes made):**
