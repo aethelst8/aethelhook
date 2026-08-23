@@ -5,6 +5,12 @@
 <h1 align="center">AethelHook</h1>
 <p align="center"><b>AI agent permission gateway - approve or deny every AI tool call from your phone.</b></p>
 
+<p align="center">
+  <a href="https://play.google.com/store/apps/details?id=com.aethelhook.app">
+    <img alt="Get it on Google Play" src="https://play.google.com/intl/en_us/badges/static/images/badges/en_badge_web_generic.png" height="60">
+  </a>
+</p>
+
 ---
 
 ## What it is
@@ -133,17 +139,16 @@ hooks, and the Tray app.
 > projects (SignPath, OSSign) require release history this project doesn't have yet,
 > and Microsoft Trusted Signing currently only accepts individual developers in the
 > US/Canada. So Windows SmartScreen will likely show "Windows protected your PC" the
-> first time you run it - click **More info → Run anyway**. Same applies to installing
-> the APK - Android will warn about installing from an unknown source; that's expected
-> for a sideloaded app not yet on the Play Store.
+> first time you run it - click **More info → Run anyway**.
 
 **Phone:**
 
-The Android app's source isn't part of this repo. Download the latest signed APK from
-[GitHub Releases](https://github.com/aethelst8/aethelhook/releases/latest) and install
-it (Android will warn about installing from an unknown source - see the note above).
-Open the app, then on the PC open `http://localhost:5266/pair` and scan the QR code
-shown there.
+The Android app's source isn't part of this repo. Get it from
+[Google Play](https://play.google.com/store/apps/details?id=com.aethelhook.app) and
+install it like any other app (a signed APK is also posted on
+[GitHub Releases](https://github.com/aethelst8/aethelhook/releases/latest) if you'd
+rather sideload). Open the app, then on the PC open `http://localhost:5266/pair` and
+scan the QR code shown there.
 
 ## Development
 
