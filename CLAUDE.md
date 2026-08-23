@@ -1276,6 +1276,159 @@ security work since done - see README.md instead).
     sequences at different hashes is the signature of a full history rewrite happening
     upstream, not genuine divergence - treat it as "replay my commits on their history,"
     never as "force my history onto theirs."
+39. **A real tester (mid closed-testing) reported AethelHook crashing via a WhatsApp
+    message and a Samsung "Device care" battery-management screenshot, not through
+    any of the app's own reporting channels - root-caused via Play Console's own
+    Android Vitals, not guesswork.** The real stack trace showed
+    `android.app.ForegroundServiceStartNotAllowedException` thrown from inside
+    `AethelHookWebSocketService.onCreate()`'s unconditional `startForeground()` call
+    (line 40), wrapped in a `RuntimeException` from `ActivityThread.
+    handleCreateService` - i.e. the OS itself creating the service, not a bug in any
+    call site AethelHook controls. Confirmed every real `.start()` caller
+    (`BootReceiver`'s `BOOT_COMPLETED` receiver, `MainActivity`'s gateway toggles) is
+    already in one of Android's documented background-foreground-service-start
+    exemptions - the actual trigger is `onStartCommand`'s `START_STICKY` return value.
+    When the OS kills the service's process (confirmed on two independent real
+    devices: a Redmi A3 per Vitals' own crash sample, and a Samsung A24 per this
+    tester's own report - "Affected users: 2" in Vitals matches exactly), the sticky
+    contract auto-recreates it later, calling `onCreate()` -> `startForeground()`
+    again - and that automatic system-restart is explicitly NOT an exempted reason
+    under Android 12+'s foreground-service-launch restrictions, so it throws instead
+    of quietly resuming. **Not manufacturer-specific** despite hitting two different
+    OEMs' aggressive battery-management features (Samsung's "Device Care", presumably
+    Xiaomi's own on the Redmi) - it's a general platform restriction any sufficiently
+    aggressive background-kill policy on any OEM will eventually trigger. Fix: wrapped
+    the `startForeground()` call in `try`/`catch (e: Exception)` - `Log.w`s the
+    rejection and calls `stopSelf()` instead of crashing, matching the existing
+    catch-and-warn convention already used for `AethelHookWebSocket.kt`'s own
+    `NetworkCallback` registration. Deliberately left `onStartCommand`'s
+    `START_STICKY` return value unchanged - a killed service that can't legally
+    auto-restart now just quietly stays down instead of crash-looping, and restarts
+    cleanly next time an exempt trigger fires (app opened, reboot, a gateway toggle)
+    rather than needing a separate resilience mechanism (e.g. WorkManager-scheduled
+    restarts) built out for this. Verified via a clean `compileDebugKotlin` before
+    shipping. Shipped as Android `versionCode` 7 -> 8, `versionName` "1.3.0" ->
+    "1.3.1" - signed release AAB (`app\build\outputs\bundle\release\app-release.aab`,
+    confirmed signed via `META-INF/AETHELHO.RSA`/`.SF` presence via `bundleRelease`),
+    uploaded to the Closed testing - Alpha track by the user directly through the
+    Play Console web UI - confirmed via grep that no Play Publishing API,
+    service-account credentials, or `fastlane` config exist anywhere in this repo, so
+    every Play Console interaction in this project (this session included) happens by
+    hand, not through any automation this session's tools can drive directly.
+    **Also surfaced two small process gaps while triaging this, not code bugs, not
+    yet acted on**: (1) the in-app "Report an Issue" button (`MainActivity.kt`,
+    shipped 2026-07-31) points at GitHub Issues, real friction for a non-technical
+    tester - this tester's actual first instinct was WhatsApp instead. Play Console's
+    own per-track "Feedback URL or email address" field was already set to
+    `aethelst8@gmail.com` (confirmed via a live screenshot of the Closed testing -
+    Alpha track settings), a lower-friction channel Google surfaces directly to
+    enrolled testers that the in-app button doesn't currently point at - worth
+    reconciling the two if this keeps happening. (2) the
+    `aethelhook-testing@googlegroups.com` group is shared across both AethelHook and
+    sastownhub testers, so a fix-announcement post to it needs to explicitly scope
+    which app it's about - done here by leading the post with "(this one doesn't
+    affect sastownhub)".
+40. **A `Column` inside a `Row(horizontalArrangement = Arrangement.SpaceBetween)` with
+    no `Modifier.weight(1f)` doesn't wrap its `Text` - it just overflows past whatever
+    sits next to it (here, a `Switch`).** Without a weight, the `Column` measures at
+    its own unconstrained intrinsic width, so `Text` never hits a width to wrap
+    against - it's not a "wraps but looks bad" bug, the text genuinely renders past/
+    under the sibling. Every one of `MainActivity.kt`'s six gateway-toggle rows
+    (Claude/Codex/OpenCode/Gemini/Copilot/Devin CLI) has this same missing modifier -
+    it only ever surfaced for Devin CLI's row because "Tool calls route to phone
+    (terminal CLI only)" is the one subtitle long enough to actually overflow; the
+    other five's shorter strings happened to fit. Reported by a real closed-testing
+    tester (Nobelstate, 2026-08-07) via email with screenshots, not found via code
+    review. Fixed by adding `Modifier.weight(1f).padding(end = 12.dp)` to that one
+    `Column` (Devin CLI's row only, matching the reported bug's scope - the other five
+    rows are left as-is unless a future subtitle string grows long enough to hit the
+    same trap). Verified via `compileDebugKotlin`, then a real debug-APK
+    uninstall/reinstall on the dev phone (required a fresh QR re-pair, same signing-key
+    gotcha as every prior debug/release swap) - user confirmed "its perfect."
+41. **Every gateway toggle row's "Active" label was driven purely by the local
+    on/off preference, not by whether the phone had actually connected to the PC** -
+    reported by a real closed-testing tester recruited via the r/LookWhatTheyBuilt
+    Reddit post (2026-08-10), on a completely unpaired first run: the hero card banner
+    correctly read "Gateway Offline" in red, but every row below it (Claude Code,
+    Codex, OpenCode, Gemini) still read "- Active / Tool calls route to phone" with
+    the toggle on, since each row's text only ever checked `xGatewayEnabled` (the
+    saved preference), never `apiStatus` (the real WebSocket connection state) -
+    exactly the kind of state-mismatch this project's own security/accuracy
+    discipline exists to catch, just missed here because the two signals were never
+    cross-checked when the rows were first written across gotchas #27/#28/#32/#33/#34.
+    A false "Active" reading on first run is genuinely confusing (the tester spent a
+    minute wondering if pairing had silently already happened). Same report also
+    flagged the hero card's status subtitle (e.g. "Open Settings - connect to the
+    same Wi-Fi as your PC to auto-discover") truncating mid-sentence at `maxLines = 1`
+    - exactly the sentence telling a new tester what to do next. Fixes, applied to all
+    six toggle rows identically (not abstracted into a shared composable, matching
+    this project's existing preference for direct repetition over premature
+    abstraction across these rows - see gotcha #40): each row's title now reads
+    "Active" only when `enabled && apiStatus == true`, "Waiting" when enabled but not
+    yet connected (dimmed to `c.textSecondary`), "Inactive" when off; subtitle mirrors
+    the same three states ("Tool calls route to phone" / "Waiting for gateway to
+    connect" / "Approve dialogs in ..."). Status subtitle `maxLines` bumped 1 -> 2 so
+    the truncated sentence now wraps and reads in full. Verified via a clean
+    `compileDebugKotlin` only - no on-device install this session (would have
+    required uninstalling the tester's current build and a fresh QR/Windows-Hello
+    re-pair on the dev phone mid-testing-period), so this shipped straight to a
+    signed release build instead. Shipped as Android `versionCode` 10 -> 11,
+    `versionName` "1.3.3" -> "1.3.4" - signed release AAB
+    (`app\build\outputs\bundle\release\app-release.aab`, confirmed signed via
+    `META-INF/AETHELHO.RSA`/`.SF` presence via `bundleRelease`), uploaded to Play
+    Console by the user directly (same manual-only workflow as every prior release).
+    Tester reply sent by the user directly via Reddit DM (the tester's original
+    report arrived that way too, not through the in-app "Report an Issue" button or
+    the Play Console feedback address) - a third distinct report channel alongside
+    WhatsApp (gotcha #39) and email (gotcha #40), reinforcing that real testers reach
+    for whatever channel is already open, not necessarily the ones this project
+    designed for. A broader fix-announcement was also drafted for
+    `aethelhook-testing@googlegroups.com`, scoped to AethelHook only per the gotcha
+    #39 convention (the group is shared with sastownhub testers), asking testers to
+    update to v1.3.4 - not yet confirmed posted.
+42. **`sendTestEvent` ("Send Test Ping" on the Dashboard) threw a raw OkHttp exception
+    straight into the UI instead of a friendly message, when tapped before pairing.**
+    Reported by a real closed-testing tester (2026-08-12) via a screenshot:
+    "Something went wrong sending that: Expected URL scheme 'http' or 'https' but no
+    scheme was found for /hook/...". Root cause: `AppPrefs.getApiUrl(ctx)` defaults to
+    `""` until pairing completes (`AppPrefs.kt:152-154`), and `sendTestEvent` built the
+    request URL as `"$baseUrl/hook/event"` with no upfront blank check - OkHttp's
+    `Request.Builder().url()` throws `IllegalArgumentException` on the resulting
+    schemeless string (`/hook/event`), which `friendlyNetworkError`'s catch-all `else`
+    branch dumped verbatim (`e.message`) instead of translating it. Fix: `sendTestEvent`
+    (`MainActivity.kt`) now checks `baseUrl.isBlank()` before attempting the request and
+    returns "Not paired yet - go to Settings and tap 'Scan QR to Pair' first." directly;
+    `friendlyNetworkError` (`NetworkErrors.kt`) also gained an `IllegalArgumentException`
+    case with the same message as a defensive fallback, since every other
+    `AppPrefs.getApiUrl(ctx)` call site (`fetchKnownProjects`/`fetchGitStatus`/
+    `fetchTokenUsage`/`sendPromptToApi` in `SessionActivity.kt`) has the identical
+    blank-URL exposure and none of them check first either.
+    - **Same report also asked for a welcome page, then a user guide right after it** -
+      added as a first-launch onboarding flow (`OnboardingScreen`/`WelcomePage`/
+      `GuidePage` in `MainActivity.kt`), gated by a new
+      `AppPrefs.getHasSeenWelcome`/`setHasSeenWelcome` flag (there was no "show once"
+      mechanism in `AppPrefs` before this - every other stored flag is a persistent
+      setting, not a one-time marker). Welcome page explains what AethelHook does in
+      plain language; the guide page that follows is 4 numbered steps (install on PC,
+      pair via QR/Windows Hello, approve from notifications, try Send Test Ping -
+      explicitly noting it only works after pairing, closing the loop on the bug
+      above). Rendered in `AethelHookApp` in place of the normal tab content (a new
+      `showOnboarding` state gate around the existing `AnimatedContent`/`FloatingPillNav`
+      block), not a `Dialog` overlay like `SummaryPopup` - this is a full first-run
+      flow, not a dismissable card. Both pages have a "Skip" link. Also added a "View
+      Welcome Guide" `GlassButton` to Settings (`onShowGuide` callback threaded from
+      `AethelHookApp`) so anyone who already dismissed it, or wants to re-read the
+      pairing steps, can reopen it anytime - a one-time-only view with no way back would
+      have left this same tester's own request half-answered.
+    - Verified via `compileDebugKotlin` + `lintDebug` only, no on-device install - per
+      explicit user choice, shipped straight to a signed release to avoid disrupting
+      the ongoing closed-testing period's pairing on the dev phone (same precedent as
+      the 2026-08-10 fix). Shipped as Android `versionCode` 11 -> 12, `versionName`
+      "1.3.4" -> "1.3.5" - signed release AAB
+      (`app\build\outputs\bundle\release\app-release.aab`, confirmed signed via
+      `META-INF/AETHELHO.RSA`/`.SF` presence via `bundleRelease`), en-GB release notes
+      drafted. Upload to Play Console left to the user (same manual-only workflow as
+      every prior release) - not yet confirmed uploaded, and no tester reply sent yet.
 
 ## Key file paths
 
@@ -1319,6 +1472,208 @@ dotnet publish AethelHook.Tray\AethelHook.Tray.csproj -c Release -r win-x64 --se
 significant work session, the same way you'd update any other session/handoff file.
 Older entries can be trimmed once they're no longer relevant; this isn't a full
 changelog (see git history / memory for that), just enough to orient the next session.*
+
+**As of 2026-08-19 (applied for Google Play production access - all three closed-
+test gates green, application submitted, awaiting Google's review):**
+
+- **All three "Apply for production" gates on the Play Console dashboard turned
+  green** (publish a closed testing release / 12 testers opted-in / run for at
+  least 14 days) - the 14-day continuous-opt-in clock that started around
+  2026-08-05 completed on schedule. Completed the 3-step "Apply for access to
+  production" questionnaire (About your closed test / About your app / Your
+  production readiness) and submitted it - **Google confirmed receipt** with an
+  expected review time of "seven days or less, but may occasionally take
+  longer," applied at 08:34 on 2026-08-19.
+- **Answers were written to be specific and honest rather than generic
+  boilerplate**, grounded in this file's own gotcha history rather than
+  marketing language: recruitment via personal contacts + a public Reddit post +
+  an open Google Group (explicitly no paid testing provider, after evaluating
+  and declining one earlier in the project), and the real bugs found and fixed
+  during closed testing (gotchas #39-42: a foreground-service crash, a UI
+  text-overflow bug, a false "Active" status shown before pairing, a raw error
+  message on first use). Per explicit user request, also noted that real users
+  (not just closed-test testers) use AethelHook daily with their AI assistants
+  and cite its convenience, reliability, and being free/open source.
+- **Confirmed same day**: v1.3.5 (the Send Test Ping fix + onboarding flow, see
+  the 2026-08-12 entry below) was in fact uploaded to the closed track before
+  this application went in - the upload-pending flag from the 2026-08-12 entry
+  below is resolved. Next real milestone is Google's review decision, expected
+  around 2026-08-26.
+
+**As of 2026-08-12 (Send Test Ping error message fixed, welcome page + user guide
+added, shipped as Android v1.3.5/versionCode 12 - upload and tester reply still
+pending):**
+
+- **Full detail in gotcha #42 above.** Short version: a tester's screenshot showed a
+  raw OkHttp exception ("Expected URL scheme 'http' or 'https'...") from tapping
+  "Send Test Ping" before pairing - `apiUrl` defaults to `""` until paired, so the
+  request URL had no scheme and the generic exception fell through unstranslated.
+  The same report also asked for a welcome page, then a user guide right after it.
+- **Fix**: `sendTestEvent` now checks for a blank URL up front and returns "Not
+  paired yet - go to Settings and tap 'Scan QR to Pair' first." instead of hitting
+  OkHttp at all; `friendlyNetworkError` also gained an `IllegalArgumentException`
+  case with the same message as a defensive fallback for other call sites with the
+  same exposure (`fetchKnownProjects`/`fetchGitStatus`/`fetchTokenUsage`/
+  `sendPromptToApi`, none of which check first either - not fixed at the call-site
+  level this session, only covered by the shared fallback).
+- **Added a first-launch welcome page + 4-step user guide** (`OnboardingScreen` in
+  `MainActivity.kt`), gated by a new one-time `AppPrefs` flag
+  (`getHasSeenWelcome`/`setHasSeenWelcome` - no such "show once" mechanism existed
+  before this). Replayable anytime via a new "View Welcome Guide" button in
+  Settings, so dismissing it once doesn't lose it permanently.
+- **Verified via `compileDebugKotlin` + `lintDebug` only** - no on-device install,
+  shipped straight to a signed release per explicit user choice (same
+  don't-disrupt-the-testing-phone precedent as 2026-08-10). Shipped as Android
+  `versionCode` 11 -> 12, `versionName` "1.3.4" -> "1.3.5" - signed release AAB
+  confirmed signed via `META-INF/AETHELHO.RSA`/`.SF` presence via `bundleRelease`.
+  en-GB Play Console release notes drafted (under the 500-char limit).
+- **Not yet done**: the AAB hasn't been uploaded to Play Console yet (left to the
+  user, same manual-only workflow as every prior release); no tester reply sent;
+  no real-device confirmation of either the error-message fix or the onboarding
+  flow (compile/lint-verified only).
+
+**As of 2026-08-10 (Dashboard "false Active" + truncated status-line bug fixed and
+shipped, Android v1.3.4/versionCode 11 - tester reply and Google Group post drafted):**
+
+- **Full detail in gotcha #41 above.** Short version: a tester recruited via the
+  r/LookWhatTheyBuilt Reddit post reported that on an unpaired first run, every
+  gateway toggle row (Claude Code, Codex, OpenCode, Gemini) read "- Active / Tool
+  calls route to phone" the moment its switch was flipped on, even though the hero
+  card above correctly showed "Gateway Offline" - a real false-positive since each
+  row's label only ever checked the saved on/off preference, never the actual
+  WebSocket connection state. Same report flagged the hero card's status subtitle
+  truncating mid-sentence at `maxLines = 1`, cutting off the exact instruction
+  telling a new tester what to do next.
+- **Fix applied identically to all six toggle rows** (`MainActivity.kt`): title now
+  reads "Active" only when the toggle is on AND `apiStatus == true`, "Waiting" when
+  on but not yet connected (dimmed), "Inactive" when off - subtitle mirrors the same
+  three states. Status subtitle `maxLines` bumped 1 -> 2 so it wraps instead of
+  truncating. Verified via `compileDebugKotlin` only - no on-device install this
+  session (would have forced a re-pair on the dev phone mid-testing-period), so this
+  went straight to a signed release build.
+- **Shipped as Android `versionCode` 10 -> 11, `versionName` "1.3.3" -> "1.3.4"** -
+  signed release AAB (`app\build\outputs\bundle\release\app-release.aab`, confirmed
+  signed via `META-INF/AETHELHO.RSA`/`.SF` presence via `bundleRelease`), uploaded to
+  Play Console by the user directly.
+- **Tester reply sent via Reddit DM** (matching the channel the original report came
+  in on, not email or the in-app report button). A broader fix-announcement for
+  `aethelhook-testing@googlegroups.com` was drafted, scoped to AethelHook only (the
+  group is shared with sastownhub testers, same convention as gotcha #39/#40), asking
+  testers to update to v1.3.4 - **not yet confirmed posted**.
+- **Not yet done**: no real-device confirmation of the fix (compile-verified only);
+  the Google Group post is drafted but unposted; the daily tester-reminder
+  notification from 2026-08-09 (below) still hasn't been confirmed firing on a real
+  device either.
+
+**As of 2026-08-09 (daily tester-reminder notification added, testing-only, shipped as
+Android v1.3.3/versionCode 10 - signed AAB built, not yet uploaded to Play Console):**
+
+- **Added a hardcoded-on daily local notification** ("Got a minute for AethelHook?" /
+  9:00 AM local time) to nudge closed-testing testers to open the app briefly - the
+  12-tester/14-day Play Console requirement needs real opens, not just an install. New
+  `DailyReminderReceiver.kt` (`DailyReminderScheduler` object + a non-exported
+  `BroadcastReceiver`) uses an inexact `AlarmManager.setAndAllowWhileIdle()` alarm (no
+  `SCHEDULE_EXACT_ALARM`/`USE_EXACT_ALARM` needed - already-granted `POST_NOTIFICATIONS`
+  from `MainActivity`'s existing request covers it) that self-reschedules for the next
+  day each time it fires. Armed from `MainActivity.onCreate` (idempotent - just
+  recomputes "next 9 AM" each call) and re-armed in `BootReceiver.onReceive`
+  unconditionally (alarms don't survive reboot, and this shouldn't depend on any
+  gateway-enabled flag). Tapping the notification just opens `MainActivity` normally
+  (no `summary_title`/`summary_body` extras, so it doesn't trigger the glass
+  summary-popup path). New 4th notification channel (`"aethelhook_reminder"`,
+  `IMPORTANCE_DEFAULT`), following the exact create-channel-inline-before-notify
+  pattern already used by the other 3 channels in `AethelHookWebSocketService.kt`/
+  `AethelHookWebSocket.kt`.
+- **Deliberately scoped as testing-only, not a permanent feature** (explicit user
+  choice) - no Settings toggle, hardcoded on. `DailyReminderReceiver.kt`'s header
+  comment spells out the 3 removal sites (the file itself, its manifest `<receiver>`
+  entry, and the two `scheduleNext()` call sites) for whoever revisits this before a
+  Production release.
+- **Verified via compile + lint + a real signed release build, not a device install** -
+  the user explicitly declined an on-device install this session (updating via Play
+  Store instead), so this was checked via `compileDebugKotlin` (clean), `lintDebug`
+  (clean, zero warnings on the new files), and `bundleRelease` (signed - confirmed
+  `META-INF/AETHELHO.RSA`/`.SF` present in the AAB, same as every prior release).
+  Version bumped `versionCode` 9 -> 10, `versionName` "1.3.2" -> "1.3.3".
+- **Not yet done**: the signed AAB
+  (`app\build\outputs\bundle\release\app-release.aab`) hasn't been uploaded to Play
+  Console yet - that's on the user, same manual-only Play Console workflow as every
+  prior release (no Publishing API/service-account/fastlane in this repo). Also not
+  done: no real-device confirmation that the notification actually fires at 9 AM
+  (compile/lint/signature-verified only, per explicit user request to skip a device
+  install this session).
+
+**As of 2026-08-07 (Devin CLI dashboard text-wrap bug fixed and shipped, Android
+v1.3.2/versionCode 9, tester and Google Group communications sent):**
+
+- **Full detail in gotcha #40 above.** Short version: the same tester from gotcha #39
+  (Nobelstate) emailed a UI change request with screenshots - the "Devin CLI - Active"
+  subtitle text was getting cut off/overflowing behind the toggle switch instead of
+  wrapping. Root cause: `MainActivity.kt`'s Devin CLI toggle row `Column` had no
+  `Modifier.weight(1f)`, so it measured at its unconstrained width and the `Text`
+  never got a width to wrap against - a real, general Compose trap present in all six
+  gateway-toggle rows, just only long enough to trigger visibly for this one row's
+  subtitle.
+- **Fix scoped to the reported row only** (Devin CLI's `Column` gained
+  `Modifier.weight(1f).padding(end = 12.dp)`) - the other five toggle rows have the
+  identical missing modifier but no currently-long-enough subtitle to expose it, left
+  alone per this project's "don't refactor beyond what's asked" convention.
+- **Verified via a real device round-trip, not just a compile check**: built
+  `assembleDebug`, uninstalled the existing app via `adb uninstall` (per explicit user
+  request) and reinstalled the new debug APK via `adb install -r` (required a fresh QR
+  re-pair, same signing-key-mismatch gotcha noted throughout this file), user confirmed
+  the subtitle now wraps correctly on-device.
+- **Shipped as Android `versionCode` 8 -> 9, `versionName` "1.3.1" -> "1.3.2"** - signed
+  release AAB (`app\build\outputs\bundle\release\app-release.aab`, confirmed signed via
+  `META-INF/AETHELHO.RSA`/`.SF` presence via `bundleRelease`), uploaded to Play Console
+  by the user directly (same manual-only Play Console workflow noted in gotcha #39 -
+  no Publishing API/service-account/fastlane in this repo).
+- **Tester + Google Group communication sent this session**: a follow-up email to the
+  reporting tester (nobelstate302@gmail.com) confirming the fix is live in v1.3.2, plus
+  a new fix-announcement thread on `aethelhook-testing@googlegroups.com` - again scoped
+  explicitly to AethelHook only in the subject/body, same convention as gotcha #39,
+  since that group is shared with sastownhub testers.
+
+**As of 2026-08-06 (tester-reported crash root-caused via Play Vitals and fixed, shipped
+as Android v1.3.1/versionCode 8, tester and Google Group communications sent):**
+
+- **Full detail in gotcha #39 above.** Short version: a closed-testing tester reported
+  AethelHook crashing via WhatsApp and a Samsung "Device care" screenshot, not through
+  any in-app or Play Console channel. Root-caused via Play Console's own Android
+  Vitals (real stack trace, not guesswork):
+  `android.app.ForegroundServiceStartNotAllowedException` thrown from
+  `AethelHookWebSocketService.onCreate()`'s `startForeground()` call, triggered by
+  Android 12+ blocking the OS's own automatic `START_STICKY` restart of a killed
+  service while backgrounded - confirmed on two independent real devices (a Redmi A3
+  per Vitals' sample, a Samsung A24 per this tester), not manufacturer-specific.
+- **Fix**: wrapped `startForeground()` in `try`/`catch`, `Log.w`s the rejection and
+  calls `stopSelf()` instead of crashing. `START_STICKY` left unchanged - a killed
+  service now just stays down until the next exempt trigger (app open, reboot, gateway
+  toggle) instead of crash-looping. Verified via a clean `compileDebugKotlin` before
+  shipping.
+- **Shipped as Android `versionCode` 8 / `versionName` "1.3.1"** - signed release AAB
+  built via `bundleRelease`, signature confirmed via `META-INF/AETHELHO.RSA`/`.SF`
+  presence, uploaded to the Closed testing - Alpha track by the user directly through
+  the Play Console web UI (confirmed via grep: no Play Publishing API, service-account
+  credentials, or `fastlane` config exist anywhere in this repo - every Play Console
+  interaction is manual).
+- **Tester communication handled end to end this session**: drafted and sent (via the
+  user) an email reply to the reporting tester through the Closed testing track's own
+  configured feedback address (`aethelst8@gmail.com`), plus a broader fix-announcement
+  post to the shared `aethelhook-testing@googlegroups.com` group (22 members, shared
+  with sastownhub - explicitly scoped the post to AethelHook only to avoid confusing
+  the shared audience). Play Console `en-GB` release notes drafted and confirmed
+  pasted in.
+- **Real gap surfaced, not yet acted on**: the in-app "Report an Issue" button
+  (Settings screen) opens GitHub Issues, real friction for a non-technical tester (this
+  one reached for WhatsApp instead) - Play Console's own per-track feedback field is
+  already set to a plain email address that would've been easier for this tester to
+  reach. Worth reconciling if this keeps happening.
+- **Not yet done**: no follow-up Android Vitals check yet to confirm the crash rate
+  actually drops post-update - needs a few days of real usage across both affected
+  testers' devices. Also unconfirmed: whether uploading a new release mid-testing-period
+  affects the ongoing 14-day/12-tester closed-testing clock (see the 2026-08-04 entry
+  below) - not verified either way this session.
 
 **As of 2026-08-04 (weeks of uncommitted work finally pushed to GitHub after a history-
 rewrite discovery, website updated for the 6-agent lineup, and the first Google Play
