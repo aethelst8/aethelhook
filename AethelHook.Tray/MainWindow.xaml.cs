@@ -163,6 +163,12 @@ public partial class MainWindow : Window
         await RefreshDevicesAsync();
     }
 
+    private void PowerShellCommands_Click(object sender, RoutedEventArgs e)
+    {
+        var win = new PowerShellCommandsWindow { Owner = this };
+        win.ShowDialog();
+    }
+
     private async void PairNewDevice_Click(object sender, RoutedEventArgs e)
     {
         var hwnd = new System.Windows.Interop.WindowInteropHelper(this).Handle;

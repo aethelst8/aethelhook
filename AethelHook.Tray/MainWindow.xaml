@@ -8,6 +8,7 @@
         <Grid.RowDefinitions>
             <RowDefinition Height="Auto" />
             <RowDefinition Height="Auto" />
+            <RowDefinition Height="Auto" />
             <RowDefinition Height="*" />
             <RowDefinition Height="Auto" />
             <RowDefinition Height="2*" />
@@ -19,13 +20,17 @@
             <TextBlock x:Name="PhoneStatusText" Text="Phone: checking..." />
         </StackPanel>
 
-        <StackPanel Grid.Row="1" Orientation="Horizontal" Margin="0,0,0,12">
+        <StackPanel Grid.Row="1" Orientation="Horizontal" Margin="0,0,0,8">
             <TextBlock Text="Gateway" VerticalAlignment="Center" Margin="0,0,8,0" />
             <ToggleButton x:Name="GatewayToggle" Content="..." Width="50" Click="GatewayToggle_Click" />
         </StackPanel>
 
+        <StackPanel Grid.Row="2" Orientation="Horizontal" Margin="0,0,0,12">
+            <Button Content="PowerShell Commands" Padding="8,3" Click="PowerShellCommands_Click" />
+        </StackPanel>
+
         <!-- Devices -->
-        <DockPanel Grid.Row="2">
+        <DockPanel Grid.Row="3">
             <DockPanel DockPanel.Dock="Top">
                 <TextBlock Text="Paired Devices" FontWeight="Bold" VerticalAlignment="Center" />
                 <Button Content="Pair New Device" HorizontalAlignment="Right" Padding="8,2" Click="PairNewDevice_Click" />
@@ -49,10 +54,10 @@
             </ListView>
         </DockPanel>
 
-        <TextBlock Grid.Row="3" Text="Live Feed" FontWeight="Bold" Margin="0,16,0,6" />
+        <TextBlock Grid.Row="4" Text="Live Feed" FontWeight="Bold" Margin="0,16,0,6" />
 
         <!-- Live feed -->
-        <ListView x:Name="FeedList" Grid.Row="4">
+        <ListView x:Name="FeedList" Grid.Row="5">
             <ListView.View>
                 <GridView>
                     <GridViewColumn Header="Time" Width="70" DisplayMemberBinding="{Binding Time}" />
