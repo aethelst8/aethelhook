@@ -1429,6 +1429,34 @@ security work since done - see README.md instead).
       `META-INF/AETHELHO.RSA`/`.SF` presence via `bundleRelease`), en-GB release notes
       drafted. Upload to Play Console left to the user (same manual-only workflow as
       every prior release) - not yet confirmed uploaded, and no tester reply sent yet.
+43. **`AethelHook.Tray.csproj` references both WPF and WinForms, so plain `Button`/
+    `Clipboard` are ambiguous** between `System.Windows.Controls.Button`/
+    `System.Windows.Clipboard` and their `System.Windows.Forms` namesakes - compiler
+    error CS0104, hit while adding the "PowerShell Commands" dialog (a new
+    `PowerShellCommandsWindow` with per-row Copy buttons, see the 2026-08-23 status
+    entry below). Same class of ambiguity `MainWindow.xaml.cs` already works around
+    for `MessageBox`/`Brush`/`Brushes` via explicit `using X = System.Windows.X;`
+    aliases - any new Tray window that touches `Button`, `Clipboard`, or similar
+    WPF/WinForms-overlapping types needs the same alias treatment.
+    **Separately, verifying a new Tray window visually hit the app's own
+    single-instance `Mutex`** (`"Global\\AethelHook.Tray.SingleInstance"`,
+    `App.xaml.cs`) - a freshly-built debug exe launched while the live production
+    Tray is running just silently no-ops (`Shutdown()` immediately, no new window,
+    no error). The app also only ever shows `MainWindow` via a real tray-icon click
+    or its context menu, never automatically on startup, which makes a debug build
+    hard to inspect headlessly - automating a genuine click on a Windows
+    notification-area icon via UI Automation proved too fragile to get working
+    (tried searching `ToolbarWindow32` directly and via the "Show hidden icons"
+    overflow chevron; neither located the icon). Working pattern for next time:
+    stop the live production Tray process, launch the debug build (now the sole
+    Mutex holder), optionally add a **temporary** `ShowMainWindow();` call at the
+    end of `OnStartup` to force the window open without needing a real click,
+    verify, then explicitly revert that temporary line (confirm via `git diff
+    --stat App.xaml.cs` showing no changes) before rebuilding for real and
+    restarting the production Tray from `C:\Program Files\AethelHook\Tray\
+    AethelHook.Tray.exe` - safe to stop/restart since Tray is only the interactive
+    status/control UI, not the approval-routing engine (that's the separate
+    `AethelHook.API` Windows Service, unaffected either way).
 
 ## Key file paths
 
@@ -1447,6 +1475,7 @@ security work since done - see README.md instead).
 | `.devincli\hooks\*.ps1`, `.devincli\hooks\extract_summary.py`, `.devincli\hooks\find_latest_session.py` | Dev copies of Devin CLI's standalone-CLI-only hooks + its two Python/SQLite helpers (summary extraction, Session Access resume lookup) - sync to `dist\hooks\devincli\` + `C:\ProgramData\AethelHook\hooks\devincli\` after editing - see gotchas #34/#35 |
 | `app\...\MainActivity.kt`, `SessionActivity.kt`, `AethelHookWebSocket.kt` | Android - nav/dashboard, Session Access tab, WS client |
 | `AethelHook.Tray\WindowsHello.cs` | Windows Hello gate for "Pair New Device" - raw WinRT vtable interop, see gotcha #24 |
+| `AethelHook.Tray\PowerShellCommandsWindow.xaml(.cs)` | "PowerShell Commands" dialog (Get/Start/Stop/Restart-Service AethelHook, one-click copy) - see gotcha #43 |
 
 ## Build / deploy quick reference
 
@@ -1472,6 +1501,84 @@ dotnet publish AethelHook.Tray\AethelHook.Tray.csproj -c Release -r win-x64 --se
 significant work session, the same way you'd update any other session/handoff file.
 Older entries can be trimmed once they're no longer relevant; this isn't a full
 changelog (see git history / memory for that), just enough to orient the next session.*
+
+**As of 2026-08-23 (AethelHook went LIVE on Google Play Production; Play Store
+title optimized; website got Play Store cross-linking + platform icons; Tray app
+gained a "PowerShell Commands" dialog, shipped as installer v1.5):**
+
+- **Google Play production access was granted the same day it was applied for
+  (2026-08-19 -> 2026-08-23), 3 days ahead of the up-to-7-day estimate.** Being
+  granted access is a separate thing from actually being live, though - had to
+  build/promote an actual Production release afterward. Found and removed a real
+  leftover first: the 2026-08-09 daily 9am tester-reminder notification
+  (`DailyReminderReceiver.kt`) was explicitly testing-only and never removed -
+  would have shipped a permanent daily nudge to every real production user.
+  Removed the file and all 3 wiring sites (`MainActivity.onCreate`,
+  `BootReceiver`, the manifest `<receiver>` entry), shipped as Android
+  `versionCode` 12 -> 13, `versionName` "1.3.5" -> "1.3.6".
+- **A real submission-status trap worth remembering for next time**: Play
+  Console's Submission activity log showed "Published" for the first production
+  submission attempt, but the real Play Store listing 404'd and the Dashboard's
+  own "Create and publish a release" checklist still showed incomplete steps -
+  the release actually needed an explicit "Preview and confirm the release"
+  click that hadn't happened yet. A second submission genuinely cleared review
+  and published (confirmed two independent ways: the Submission activity status
+  flipping to "Published" for real, and a Google IARC "Live Rating Notice" email
+  arriving the same day, which only fires once a content rating questionnaire
+  actually goes live on a storefront). Lesson: don't trust the Submission
+  activity log's status label alone - check Publishing overview's "Changes in
+  review" section (empty means genuinely done) and, ideally, a side-channel
+  signal like that email.
+- **Play Store title optimized via the `app-store-optimization` skill's actual
+  scripts, not just guessed**: the title had been just "AethelHook" (only 20% of
+  the character field used, matching brand-name searches only). Real correction
+  during this work: the skill's own docs claim a 50-character Google Play title
+  limit, but the live Console UI enforced **30 characters** when a 39-char title
+  was rejected outright - don't trust that skill's reference doc for current
+  platform limits without checking the live UI first. Also caught a real mistake
+  before shipping: `AethelHook: Approve ClaudeCode` (fit exactly at 30 chars)
+  squashes "Claude Code" into one word, which breaks keyword matching entirely
+  since search tokenizes on whitespace. Shipped title:
+  `AethelHook: Claude & Codex` (26/30 chars). A real A/B test of the title was
+  considered and rejected as infeasible: the account's actual traffic (~1.5
+  visitors/day) would need ~144 months to reach statistical significance for a
+  5% effect size - not worth revisiting until traffic is meaningfully higher.
+- **aethelst8.com and this repo's README both still described the pre-Play-Store
+  sideload flow** ("Android APK from GitHub Releases, expect an unknown-source
+  warning, not on the Play Store yet") even after Play Store went live - fixed
+  across `Download.jsx`, `Setup.jsx`, `GuideApprove.jsx`, and `README.md` to lead
+  with the real Play Store listing, GitHub Releases APK kept only as a sideload
+  fallback. Added a real "Get it on Google Play" badge to the README (Google's
+  own official badge image) and a matching Play Store SVG icon (fetched from
+  Simple Icons) next to the site's own download button, plus a Windows icon
+  (Bootstrap Icons' MIT-licensed four-pane flag - Simple Icons has no plain
+  Windows OS logo at all) on both the "Download for Windows" button and the
+  hero's main CTA, the latter wrapping both platform icons in a row beneath the
+  button label via a new scoped `.btn-stacked`/`.btn-icon-row` CSS pair. Also
+  de-pilled the hero's "Free and open source" tag to plain white text per
+  explicit design feedback.
+- **Tray app gained a "PowerShell Commands" dialog** (see gotcha #43 for the two
+  real technical gotchas hit building/verifying it) - one-click copy for the same
+  4 service commands (`Get/Start/Stop/Restart-Service AethelHook`) the website's
+  Troubleshooting section already documents, placed below the Gateway toggle.
+  Shipped as installer `AppVersion` 1.4 -> 1.5, rebuilt via the documented
+  `dotnet publish` (API + Tray) + `ISCC.exe` pipeline, uploaded to the existing
+  `v1.0.0` GitHub release with `--clobber` (same fixed-filename/tag convention as
+  every prior installer-only rebuild). Website's Troubleshooting section got one
+  added sentence mentioning the new in-app copy button.
+- **SasTownHub (the second AethelSt8 app) hit all 3 closed-testing gates the
+  same day** but the user deliberately chose to wait a day before applying for
+  its own production access, purely to avoid the appearance of spamming Google
+  with back-to-back applications - not because of any known actual policy risk
+  (what actually triggers spam-pattern rejections is clone/template app content,
+  not submission cadence). Plan: apply 2026-08-24.
+- **Found a substantial pre-existing gap while doing this work**: `CLAUDE.md`
+  itself had 355 lines of real, accurate documentation (gotchas #39-42 and the
+  2026-08-06 through 2026-08-19 status entries) sitting uncommitted in the
+  working tree from an earlier session - committed separately this session
+  (`7d0f549`) once confirmed legitimate. Worth checking `git status` on this
+  file specifically at the start of a session if something documented here
+  doesn't match `git log`'s own history.
 
 **As of 2026-08-19 (applied for Google Play production access - all three closed-
 test gates green, application submitted, awaiting Google's review):**
