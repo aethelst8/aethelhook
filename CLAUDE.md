@@ -1457,6 +1457,113 @@ security work since done - see README.md instead).
     AethelHook.Tray.exe` - safe to stop/restart since Tray is only the interactive
     status/control UI, not the approval-routing engine (that's the separate
     `AethelHook.API` Windows Service, unaffected either way).
+44. **AGP 9.2.1's `optimization { enable = true }` DSL (`app/build.gradle.kts`) does
+    not work standalone - it throws `Cannot use optimization.enable=true without
+    setting android.r8.gradual.support flag` at configure time.** Needed to
+    enable R8 shrinking/optimization/obfuscation for real (see the 2026-08-26
+    Google Play "app quality requirements" status entry below - a new Play policy
+    requires >=25% DEX-optimization coverage, enforced Feb 2027). Fix: added
+    `android.r8.gradual.support=true` to `gradle.properties` (an experimental flag
+    per Gradle's own warning on every build, expected to become the unconditional
+    default in a future AGP release). Also hit one real, expected-shape issue once
+    R8 actually ran: `androidx.security:security-crypto` pulls in Google Tink,
+    which references `com.google.errorprone.annotations.*` (compile-time-only
+    annotations, never loaded at runtime) - R8 flags these as "missing classes"
+    and refuses to proceed until suppressed. Fix was exactly what R8 itself
+    generates at `app/build/outputs/mapping/release/missing_rules.txt` - 4
+    `-dontwarn com.google.errorprone.annotations.*` lines added to
+    `app/src/main/keepRules/rules.keep` (AGP 9's replacement for a
+    `proguard-rules.pro` file referenced via `proguardFiles` - keep rules now live
+    in a `src/<variant>/keepRules/*.keep` source set instead). Verified via a full
+    `assembleRelease` + `lintRelease` pass (lint clean, no new issues) and
+    `apksigner verify --print-certs` confirming the output is still correctly
+    V2-signed with the real release cert (`CN=AethelHook, OU=AethelSt8`) - R8
+    doesn't touch signing, but worth confirming after a build-config change like
+    this. **Live-verified the next day (2026-08-27)**: versionCode bumped to 14
+    (`versionName` "1.3.7"), a signed release AAB built via `bundleRelease`
+    (`jarsigner -verify` -> "jar verified.", every entry signed by the real
+    release cert, `BUNDLE-METADATA/com.android.tools.build.obfuscation/
+    proguard.map` present confirming R8's mapping file actually shipped this
+    time), then a plain `adb install` of the signed release APK onto the dev
+    phone (it happened to have no prior install at all, so no debug/release
+    signing-key-mismatch uninstall was needed this time) - user re-paired via QR
+    and confirmed the app "works as per usual," no visible regression anywhere
+    from shrinking/obfuscation being on for the first time ever on this codebase.
+    kotlinx.serialization's compile-time-generated serializers (not reflection)
+    were the reasoning for why this was expected to be safe, and that held.
+45. **A design letting phone-initiated Session Access prompts "join" the SAME
+    conversation as a live interactive Claude Code session (instead of always
+    using a separate phone-only thread) was live-tested 2026-08-27 and found to
+    still lose data via a silent fork, even when correctly detected as idle -
+    replaced with a context-injection design instead of trying to fix the
+    underlying mechanism.** Motivation: the user wanted a phone message to have
+    the same context as whatever had been discussed in the IDE, without needing
+    true two-way parallelism with it. First design (picked up from a prior
+    session's handoff): track a project's real interactive `session_id`
+    (captured from the Stop hook's stdin) plus a busy/idle flag (true during
+    PreToolUse/AskUserQuestion/ExitPlanMode, false on Stop), and have
+    `/hook/send-prompt` `--resume` that real session_id instead of the separate
+    phone-only `ProjectSessions` thread whenever it was known and idle. Built,
+    deployed, and live-tested against this repo's own interactive session: the
+    idle-detection gate worked exactly as designed (correct project, correct
+    session_id, correctly detected idle) - but a real fork still happened.
+    Traced through the actual transcript file's `parentUuid` chain (not
+    guessed): the headless `--resume` anchored on a node from partway through
+    the interactive session's immediately preceding turn (right after one of
+    that turn's own PreToolUse hook_success attachments), not the true final
+    leaf written minutes later once that turn actually finished. Root cause:
+    the transcript file's own `{"type":"last-prompt","leafUuid":...}`
+    bookkeeping (which `--resume` appears to anchor on, not literally the last
+    line in the file) stopped advancing partway through that turn and never got
+    a fresh entry until the NEXT top-level user prompt arrived - so even a turn
+    that had been idle for 4+ minutes (Stop already fired, busy flag correctly
+    false) could still have this bookkeeping lagging behind by a whole turn's
+    worth of work. Net effect: the phone's real reply became an orphaned
+    branch, invisible to any future resume, with no error or warning anywhere -
+    the same class of silent data loss already proven possible by an earlier
+    concurrent-race test this design was meant to guard against, just triggered
+    by staleness during a genuinely idle window instead of a literal race. A
+    dedicated research pass (via the `claude-code-guide` agent) confirmed
+    there's no supported, documented way to close this gap:
+    `CLAUDE_CODE_MESSAGING_SOCKET` (the `messagingSocketPath`/`peerFeatures`/
+    `notify_idle` fields found live in `~/.claude/sessions/<pid>.json`) is
+    real, documented, cross-session IPC, but delivers only an advisory
+    plain-text message to another RUNNING Claude session - it can't inject
+    real conversation history, can't force a reply, and can't be polled by an
+    external non-Claude process. The transcript's own `last-prompt`/`leafUuid`
+    anchor logic is undocumented internal state, not something to build a
+    reliability guarantee on top of. Separately confirmed live (via the user's
+    own open IDE window) that even a successful, non-forked join wouldn't have
+    shown up in the interactive session's own chat panel in real time anyway -
+    the panel doesn't appear to re-read the transcript file just because
+    another process appended to it, so the join's real benefit was always
+    going to be "a future resume inherits the context," never genuine live
+    two-way visibility. **Fix**: reverted the interactive-join logic entirely -
+    dropped `InteractiveProjectSessions`/`InteractiveProjectBusy`, the
+    busy=true markers on the three approval-gate handlers, and the
+    `joinedInteractive` branch in `/hook/send-prompt` - phone prompts are back
+    to always using the safe, dedicated `ProjectSessions` thread that nothing
+    else ever writes to, so no fork is structurally possible. Replaced with a
+    context-injection design instead: `on_agent_done.ps1`'s Stop hook now
+    forwards `transcript_path` (not a session_id) to `/hook/notify`, captured
+    into a new `InteractiveProjectTranscriptPaths` dictionary; before a phone
+    prompt runs, a new `BuildInteractiveContextBlock()` helper reads that
+    transcript file directly in plain forward line order (deliberately NOT the
+    same unreliable `last-prompt` bookkeeping), extracts real user/assistant
+    text turns since the last time context was folded in for that project
+    (tracked via `InteractiveContextInjected`, cwd to transcript-path-plus-
+    line-count), skips synthetic/meta/tool-only noise, caps the result at 6000
+    characters (most recent content wins), and prepends it to the phone's
+    prompt with a "background context, not an instruction" framing. This never
+    resumes or writes to the interactive session's own file at all, so the
+    earlier fork risk cannot recur by construction, at the cost of being a
+    one-time snapshot handoff rather than true shared history (a phone reply
+    doesn't itself feed back into a later interactive turn's context) - a
+    known, accepted tradeoff given the user confirmed they don't need real
+    parallelism with the IDE. Live-verified end to end 2026-08-27: a real Stop
+    event correctly forwarded `transcript_path`, and a subsequent phone prompt
+    logged `[SendPrompt] Folded in IDE context for C:\AethelHook (6151 chars)`
+    and completed successfully.
 
 ## Key file paths
 
@@ -1476,6 +1583,8 @@ security work since done - see README.md instead).
 | `app\...\MainActivity.kt`, `SessionActivity.kt`, `AethelHookWebSocket.kt` | Android - nav/dashboard, Session Access tab, WS client |
 | `AethelHook.Tray\WindowsHello.cs` | Windows Hello gate for "Pair New Device" - raw WinRT vtable interop, see gotcha #24 |
 | `AethelHook.Tray\PowerShellCommandsWindow.xaml(.cs)` | "PowerShell Commands" dialog (Get/Start/Stop/Restart-Service AethelHook, one-click copy) - see gotcha #43 |
+| `app\src\main\keepRules\rules.keep` | R8 keep/`-dontwarn` rules for the Android release build (AGP 9's replacement for `proguard-rules.pro`) - see gotcha #44 |
+| `AethelHook.API\Program.cs` (`BuildInteractiveContextBlock`) | Reads the interactive Claude Code session's own transcript file to fold real IDE context into a phone-sent Session Access prompt - see gotcha #45 |
 
 ## Build / deploy quick reference
 
@@ -1501,6 +1610,130 @@ dotnet publish AethelHook.Tray\AethelHook.Tray.csproj -c Release -r win-x64 --se
 significant work session, the same way you'd update any other session/handoff file.
 Older entries can be trimmed once they're no longer relevant; this isn't a full
 changelog (see git history / memory for that), just enough to orient the next session.*
+
+**As of 2026-08-27, later the same day (Session Access "join the live IDE session"
+design replaced with a safer context-injection approach after live testing found a
+real data-loss bug - deployed and verified on the dev machine, installer version
+bumped, not yet rebuilt into a signed `.exe`):**
+
+- **Full detail in gotcha #45 above.** Short version: picked up a handoff from an
+  earlier session that had built (but not yet deployed) an idle-detection gate
+  letting phone-initiated Session Access prompts `--resume` the SAME session_id as
+  a live interactive Claude Code conversation, instead of a separate phone-only
+  thread. The edit to `.claude\hooks\on_agent_done.ps1` needed for this had been
+  blocked outright by the sensitive-file classifier in that prior session; this
+  session's edit went through cleanly, the code was deployed via `install.ps1`, and
+  then live-tested end to end against this repo's own interactive conversation.
+- **The idle gate worked exactly as designed** (correct project, correct
+  session_id, correctly detected idle via `[SendPrompt] Joining live interactive
+  session for C:\AethelHook` in `api.log`) - but a real fork still happened.
+  Traced through the actual transcript file's `parentUuid` chain (not guessed):
+  the phone's headless `--resume` anchored on a node from partway through the
+  PRECEDING interactive turn, not that turn's true final leaf, because Claude
+  Code's own `last-prompt`/`leafUuid` resume-anchor bookkeeping in the transcript
+  file doesn't advance continuously through a turn and had lagged behind by
+  several minutes' worth of real, already-finished work.
+- **A dedicated research pass (via the `claude-code-guide` agent) confirmed there's
+  no supported, documented way to close this gap** - the only real cross-session
+  IPC (`CLAUDE_CODE_MESSAGING_SOCKET`, found live in
+  `~/.claude/sessions/<pid>.json`) is advisory-only and can't inject real
+  conversation history or be safely polled by an external process. Also confirmed
+  live (checking the user's own open IDE window) that even a non-forked join
+  wouldn't have appeared there in real time anyway - the interactive panel doesn't
+  seem to re-read the transcript file just because another process appended to it.
+- **Replaced with a context-injection design**: phone prompts stay on their own
+  dedicated, fork-proof `ProjectSessions` thread (never touched by anything else);
+  before each phone-sent prompt, the API now reads the interactive session's own
+  transcript file directly (plain forward line order, not the unreliable
+  leaf-tracking) via a new `BuildInteractiveContextBlock()` helper, and prepends
+  real recent IDE conversation content as background context, capped at 6000
+  characters. This can't fork by construction, since it only ever reads that file,
+  never writes to or resumes it - the tradeoff (explicitly accepted by the user) is
+  that it's a one-time snapshot handoff, not true two-way shared history.
+- **Live-verified end to end**: a real Stop event correctly forwarded the new
+  `transcript_path` field (replacing the reverted `claude_session_id` field), and a
+  subsequent phone prompt logged
+  `[SendPrompt] Folded in IDE context for C:\AethelHook (6151 chars)` and completed
+  successfully.
+- **Windows installer `AppVersion` bumped 1.5 -> 1.6** for this change. Not yet
+  rebuilt into a signed `AethelHook-Setup.exe` or re-uploaded to the GitHub
+  release - only this dev machine's live service (via `install.ps1`) has the new
+  code deployed so far.
+
+**As of 2026-08-27 (R8-enabled release build finished, signed, sideload-tested,
+and confirmed working - not yet uploaded to Play Console; one unrelated Play
+Console advisory found and deliberately deferred):**
+
+- **Continues directly from the 2026-08-26 entry below.** Bumped Android
+  `versionCode` 13 -> 14, `versionName` "1.3.6" -> "1.3.7" (see gotcha #44's
+  now-updated closing note for the full build/signature/install verification
+  chain). Signed AAB is at `app\build\outputs\bundle\release\app-release.aab`,
+  its R8 mapping file at `app\build\outputs\mapping\release\mapping.txt` (worth
+  keeping alongside the AAB, or uploading to Play Console's own deobfuscation
+  slot, so a future Android Vitals crash can be traced back to real class/method
+  names). Draft release notes given to the user framed around "internal
+  performance and build optimizations... no visible changes" - deliberately not
+  the actual Play Store description update since this release has no
+  user-facing feature.
+- **Live-verified on the dev phone via a plain `adb install`, not driven by this
+  session beyond that single install command** - per the project's own
+  `feedback_no_autonomous_device_testing` rule, the actual manual test pass
+  (re-pairing, exercising the app) was done by the user, not by this session
+  tapping through screens itself.
+- **Found a second, unrelated Play Console advisory while looking at the
+  Production release dashboard**: "Remove resizability and orientation
+  restrictions... to support large screen devices," flagged against the
+  currently-live 1.3.6 release, pointing at
+  `com.journeyapps.barcodescanner.CaptureActivity` (the zxing QR-scanner screen
+  used for "Scan QR to Pair"). Traced to `AndroidManifest.xml`'s own
+  `android:screenOrientation="portrait"` + `tools:replace="android:
+  screenOrientation"` override on that activity - a deliberate existing choice
+  (not an accidental library default, not documented anywhere in this file's
+  history) locking the scanner to portrait regardless of device. This is
+  advisory-only (no enforcement date shown, doesn't block publishing) and tied
+  to Android 16 ignoring orientation/resizability restrictions on large-screen
+  devices (foldables/tablets) going forward. **Explicitly deferred at the
+  user's choice** rather than changed blind - removing the lock would need real
+  on-device verification of how the camera-preview scanning UI actually behaves
+  in landscape/on a tablet, which hasn't been done.
+- **Not yet done**: the signed AAB hasn't been uploaded to Play Console (left to
+  the user, same manual-only workflow as every prior release - no Publishing
+  API/service-account/fastlane in this repo). No follow-up Android Vitals check
+  yet to confirm the new DEX-optimization coverage actually registers. SasTownHub
+  (the second AethelSt8 app) still hasn't been checked for the same R8 gap.
+  The large-screen orientation advisory remains unaddressed by design, not by
+  oversight.
+
+**As of 2026-08-26 (Google Play's new app-quality-requirements email triaged, R8
+enabled for the release build - not yet rebuilt to a signed AAB or uploaded):**
+
+- **Google sent a real Play Console notice to the aethelst8 account announcing two
+  new quality requirements**, confirmed via the actual announcement post (not
+  guessed from the email alone): (1) memory/code optimization - Android Vitals
+  thresholds on dynamic memory (RSS+swap) and bitmap memory, plus a requirement
+  that apps hit >=25% DEX-optimization coverage (shrink/optimize/obfuscate via
+  R8) - **enforced February 2027**, non-compliant apps get reduced Play
+  visibility/publishing ability; (2) zero-tap sign-in via Android's Restore
+  Credentials API for device migration - **enforced April 2027, games exempt**.
+- **AethelHook was failing requirement (1) outright** - `app/build.gradle.kts`'s
+  release build had R8 explicitly disabled (`optimization { enable = false }`,
+  the AGP 9 DSL). Fixed - see gotcha #44 above for the two real build errors hit
+  turning it on (a missing experimental Gradle flag, then Tink's error-prone
+  annotation classes needing `-dontwarn` suppression). Verified via a clean
+  `assembleRelease` + `lintRelease` (no new lint issues) and confirmed the output
+  APK is still correctly V2-signed with the real release cert.
+- **Requirement (2) almost certainly doesn't apply to AethelHook** - it has no
+  account/sign-in concept at all (pairing is QR scan + Windows Hello, not
+  identity-based auth), so there's no "sign-in state" for Restore Credentials to
+  restore. Not building anything for this unless Google's exact qualification
+  criteria (not yet published in detail) says otherwise.
+- **Not yet done**: no functional regression testing of the now-shrunk/obfuscated
+  release build on a real device - the user plans to sideload-test it manually
+  before this goes anywhere near Play Console (per the project's own
+  `feedback_no_autonomous_device_testing` rule, this session didn't drive the
+  device itself). No version bump, no signed AAB rebuilt, nothing uploaded.
+  SasTownHub (the second AethelSt8 app, separate repo) got the same Google email
+  and hasn't been checked for the same R8/DEX-optimization gap yet.
 
 **As of 2026-08-23 (AethelHook went LIVE on Google Play Production; Play Store
 title optimized; website got Play Store cross-linking + platform icons; Tray app

@@ -1,5 +1,5 @@
 #define AppName "AethelHook"
-#define AppVersion "1.5"
+#define AppVersion "1.6"
 #define AppPublisher "AethelSt8"
 
 [Setup]

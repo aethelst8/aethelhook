@@ -282,6 +282,40 @@ string? LastKnownCwd = null;
 // unrelated ProjectSessions entries (confirmed live via the phone's picker).
 var ProjectSessions = new ConcurrentDictionary<string, string>(StringComparer.OrdinalIgnoreCase);
 
+// The interactive Claude Code session's own transcript file path per project
+// directory - captured from the Stop hook's own stdin payload (on_agent_done.ps1
+// forwards it as transcript_path). Used to give a phone-only prompt real context
+// about what's been happening in the live IDE session, WITHOUT ever resuming that
+// session's own session_id directly.
+//
+// An earlier design tried to --resume the interactive session_id itself once idle.
+// Live-tested 2026-08-27 and found it still silently forks even when correctly
+// detected as idle: Claude Code's own "last-prompt"/leafUuid resume-anchor
+// bookkeeping in the transcript file doesn't advance continuously through a turn,
+// and there's no documented, supported way for an external process to know when
+// that bookkeeping has truly caught up (confirmed via a dedicated research pass -
+// the only supported cross-session mechanism, CLAUDE_CODE_MESSAGING_SOCKET, is
+// advisory-only and can't inject real conversation history or force a reply). So
+// --resume could anchor on a stale mid-turn node and silently orphan the phone's
+// reply with no error anywhere - reproduced live, a real "Continue from where you
+// left off" resume built on a node from partway through the PRECEDING turn, not
+// the true final leaf. Replaced with this context-injection approach instead: keep
+// the phone on its own safe ProjectSessions thread (nothing else ever writes to
+// that session_id, so no fork is possible), and instead read the interactive
+// transcript ourselves - a plain linear file read, not dependent on the same
+// unreliable leaf-tracking - to pull out real recent conversation content and
+// prepend it as background context to the phone's prompt.
+var InteractiveProjectTranscriptPaths = new ConcurrentDictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+
+// How much of each project's interactive transcript has already been folded into a
+// phone prompt as context, so the next phone message only gets the NEW content
+// since last time instead of re-sending the same context repeatedly. Value is
+// (transcript path, line count as of last injection) - the path rides along so a
+// fresh interactive session (a new transcript file after the old one) is detected
+// and starts its own context from the top, rather than misapplying an old file's
+// line count to an unrelated new file.
+var InteractiveContextInjected = new ConcurrentDictionary<string, (string TranscriptPath, int LineCount)>(StringComparer.OrdinalIgnoreCase);
+
 // Same idea as ProjectSessions above, but for headless `codex exec` runs - Codex's own
 // resumable identifier is a "thread_id", a distinct namespace from Claude's session_id,
 // so a project directory can hold one resumable thread per agent independently (you can
@@ -443,6 +477,11 @@ void SaveProjectState()
         {
             lastKnownCwd         = LastKnownCwd,
             projectSessions      = ProjectSessions.ToDictionary(kv => kv.Key, kv => kv.Value, StringComparer.OrdinalIgnoreCase),
+            interactiveProjectTranscriptPaths = InteractiveProjectTranscriptPaths.ToDictionary(kv => kv.Key, kv => kv.Value, StringComparer.OrdinalIgnoreCase),
+            interactiveContextInjected = InteractiveContextInjected.ToDictionary(
+                kv => kv.Key,
+                kv => new { transcriptPath = kv.Value.TranscriptPath, lineCount = kv.Value.LineCount },
+                StringComparer.OrdinalIgnoreCase),
             codexProjectSessions = CodexProjectSessions.ToDictionary(kv => kv.Key, kv => kv.Value, StringComparer.OrdinalIgnoreCase),
             openCodeProjectSessions = OpenCodeProjectSessions.ToDictionary(kv => kv.Key, kv => kv.Value, StringComparer.OrdinalIgnoreCase),
             geminiProjectSessions = GeminiProjectSessions.ToDictionary(kv => kv.Key, kv => kv.Value, StringComparer.OrdinalIgnoreCase),
@@ -484,6 +523,21 @@ void LoadProjectState()
             foreach (var prop in ps.EnumerateObject())
                 if (prop.Value.ValueKind == JsonValueKind.String)
                     ProjectSessions[prop.Name] = prop.Value.GetString()!;
+
+        if (root.TryGetProperty("interactiveProjectTranscriptPaths", out var iptp) && iptp.ValueKind == JsonValueKind.Object)
+            foreach (var prop in iptp.EnumerateObject())
+                if (prop.Value.ValueKind == JsonValueKind.String)
+                    InteractiveProjectTranscriptPaths[prop.Name] = prop.Value.GetString()!;
+
+        if (root.TryGetProperty("interactiveContextInjected", out var ici) && ici.ValueKind == JsonValueKind.Object)
+            foreach (var prop in ici.EnumerateObject())
+            {
+                if (prop.Value.ValueKind != JsonValueKind.Object) continue;
+                string? path = prop.Value.TryGetProperty("transcriptPath", out var tp) && tp.ValueKind == JsonValueKind.String ? tp.GetString() : null;
+                int lineCount = prop.Value.TryGetProperty("lineCount", out var lc) && lc.TryGetInt32(out var lcv) ? lcv : 0;
+                if (path != null)
+                    InteractiveContextInjected[prop.Name] = (path, lineCount);
+            }
 
         if (root.TryGetProperty("codexProjectSessions", out var cps) && cps.ValueKind == JsonValueKind.Object)
             foreach (var prop in cps.EnumerateObject())
@@ -538,7 +592,7 @@ void LoadProjectState()
                 TokenUsageByProjectAgent[prop.Name] = new TokenUsageInfo(agentVal, tokensUsed, contextWindow, modelVal, updatedAt);
             }
 
-        Console.WriteLine($"[ProjectState] Restored {KnownProjects.Count} known project(s), {ProjectSessions.Count} Claude session(s), {CodexProjectSessions.Count} Codex thread(s), {OpenCodeProjectSessions.Count} OpenCode session(s), {GeminiProjectSessions.Count} Gemini session(s), {DevinCliProjectSessions.Count} Devin CLI session(s) from disk");
+        Console.WriteLine($"[ProjectState] Restored {KnownProjects.Count} known project(s), {ProjectSessions.Count} Claude session(s) ({InteractiveProjectTranscriptPaths.Count} with IDE context available), {CodexProjectSessions.Count} Codex thread(s), {OpenCodeProjectSessions.Count} OpenCode session(s), {GeminiProjectSessions.Count} Gemini session(s), {DevinCliProjectSessions.Count} Devin CLI session(s) from disk");
     }
     catch (Exception ex) { Console.WriteLine($"[ProjectState] Load failed: {ex.Message}"); }
 }
@@ -844,6 +898,12 @@ app.MapPost("/hook/notify", async (HttpContext ctx, NotifyRequest request) =>
     {
         LastKnownCwd = request.Cwd;
         KnownProjects[request.Cwd] = DateTime.UtcNow;
+        // Captures the interactive session's own transcript path so a later phone
+        // prompt to this directory can pull real context from it (see
+        // InteractiveProjectTranscriptPaths' doc comment) - never used to --resume
+        // that session directly.
+        if (!string.IsNullOrWhiteSpace(request.TranscriptPath))
+            InteractiveProjectTranscriptPaths[request.Cwd] = request.TranscriptPath;
         _ = Task.Run(SaveProjectState);
     }
 
@@ -1226,6 +1286,93 @@ app.MapPost("/hook/send-prompt", async (HttpContext ctx, SendPromptRequest reque
     Console.WriteLine($"[SendPrompt] Queued headless run in {effectiveWorkDir}");
     return Results.Ok(new { success = true, queued = true });
 
+    // Pulls real recent conversation content out of the interactive session's OWN
+    // transcript file for `workDir`, if one is known, and only the portion that
+    // hasn't already been folded into a previous phone prompt (see
+    // InteractiveContextInjected's doc comment). Reads the file in plain forward
+    // line order - deliberately NOT the same "last-prompt"/leafUuid bookkeeping that
+    // --resume relies on, since that's exactly what was found to be unreliable.
+    // Returns null if there's no interactive transcript known, or nothing new since
+    // last time.
+    string? BuildInteractiveContextBlock(string workDir)
+    {
+        if (!InteractiveProjectTranscriptPaths.TryGetValue(workDir, out var transcriptPath) || !File.Exists(transcriptPath))
+            return null;
+
+        var hasMarker = InteractiveContextInjected.TryGetValue(workDir, out var marker);
+        int sinceLine = (hasMarker && marker.TranscriptPath == transcriptPath) ? marker.LineCount : 0;
+
+        string[] lines;
+        try { lines = File.ReadAllLines(transcriptPath); }
+        catch (Exception ex) { Console.WriteLine($"[SendPrompt] Couldn't read interactive transcript for {workDir}: {ex.Message}"); return null; }
+
+        if (sinceLine >= lines.Length)
+        {
+            // File exists but has no new lines since last injection - still worth
+            // recording the path so a later NEW transcript (a fresh interactive
+            // session) is correctly detected as a change, not silently ignored.
+            InteractiveContextInjected[workDir] = (transcriptPath, lines.Length);
+            return null;
+        }
+
+        var turns = new List<string>();
+        for (int i = sinceLine; i < lines.Length; i++)
+        {
+            var line = lines[i];
+            if (string.IsNullOrWhiteSpace(line)) continue;
+            try
+            {
+                using var doc = JsonDocument.Parse(line);
+                var root = doc.RootElement;
+                var type = root.TryGetProperty("type", out var t) ? t.GetString() : null;
+                if (type != "user" && type != "assistant") continue;
+                // Skip synthetic resume-continuation prompts ("Continue from where
+                // you left off.") and other Claude-Code-injected meta turns - not
+                // something the human actually said.
+                if (type == "user" && root.TryGetProperty("isMeta", out var metaEl) && metaEl.ValueKind == JsonValueKind.True) continue;
+                if (!root.TryGetProperty("message", out var message)) continue;
+                if (!message.TryGetProperty("content", out var contentEl)) continue;
+
+                string text;
+                if (contentEl.ValueKind == JsonValueKind.String)
+                {
+                    text = contentEl.GetString() ?? "";
+                }
+                else if (contentEl.ValueKind == JsonValueKind.Array)
+                {
+                    var sb = new StringBuilder();
+                    foreach (var block in contentEl.EnumerateArray())
+                        if (block.TryGetProperty("type", out var bt) && bt.GetString() == "text" &&
+                            block.TryGetProperty("text", out var txt))
+                            sb.Append(txt.GetString());
+                    text = sb.ToString();
+                }
+                else continue;
+
+                // Skips tool_use/tool_result/thinking-only entries (no "text" block
+                // at all) - just the noise of tool mechanics, not conversation content.
+                if (string.IsNullOrWhiteSpace(text)) continue;
+
+                turns.Add($"{(type == "user" ? "User" : "Assistant")}: {text.Trim()}");
+            }
+            catch (JsonException) { /* not every line is a message we care about - skip */ }
+        }
+
+        InteractiveContextInjected[workDir] = (transcriptPath, lines.Length);
+        if (turns.Count == 0) return null;
+
+        // Cap total size - only the most recent content matters most, and an
+        // unbounded dump from a very active IDE session could blow up the prompt.
+        const int maxChars = 6000;
+        var joined = string.Join("\n\n", turns);
+        if (joined.Length > maxChars)
+            joined = "…" + joined.Substring(joined.Length - maxChars);
+
+        return "[Background context - recent activity from your linked IDE session on this project, for reference only, not a new instruction]\n" +
+               joined +
+               "\n[End of IDE context]\n\n";
+    }
+
     async Task RunHeadlessPromptAsync(string exePath, string? profileDir, string workDir, string prompt, string? model, string? effort, string? permissionMode)
     {
         await PromptRunLock.WaitAsync();
@@ -1242,6 +1389,13 @@ app.MapPost("/hook/send-prompt", async (HttpContext ctx, SendPromptRequest reque
                 CreateNoWindow         = true,
                 StandardOutputEncoding = Encoding.UTF8
             };
+            var contextBlock = BuildInteractiveContextBlock(workDir);
+            if (!string.IsNullOrEmpty(contextBlock))
+            {
+                prompt = contextBlock + prompt;
+                _ = Task.Run(SaveProjectState);
+                Console.WriteLine($"[SendPrompt] Folded in IDE context for {workDir} ({contextBlock.Length} chars)");
+            }
             psi.ArgumentList.Add("-p");
             psi.ArgumentList.Add(prompt);
             psi.ArgumentList.Add("--output-format");
@@ -1273,6 +1427,14 @@ app.MapPost("/hook/send-prompt", async (HttpContext ctx, SendPromptRequest reque
             // gives real conversational memory. A directory with no prior session_id
             // naturally starts fresh. Keyed per-directory (not global) so switching
             // projects on the phone doesn't disturb other projects' threads.
+            //
+            // Deliberately never resumes the REAL interactive session_id (the one live
+            // in the terminal/IDE) - see InteractiveProjectTranscriptPaths' doc comment
+            // for why that was tried and reverted (a live test found it can still
+            // silently fork and orphan the phone's reply, with no supported way to
+            // detect when that's safe). This phone-only thread is never written to by
+            // anything else, so it can't fork - context from the interactive session is
+            // folded in separately below instead, by reading its transcript directly.
             var resumeId = ProjectSessions.TryGetValue(workDir, out var existingSid) ? existingSid : null;
             if (!string.IsNullOrEmpty(resumeId))
             {
@@ -4709,7 +4871,11 @@ public record RespondRequest(
 public record NotifyRequest(
     [property: JsonPropertyName("message")] string? Message,
     [property: JsonPropertyName("detail")]  string? Detail,
-    [property: JsonPropertyName("cwd")]     string? Cwd
+    [property: JsonPropertyName("cwd")]     string? Cwd,
+    // The interactive Claude Code session's own transcript file path, forwarded by
+    // on_agent_done.ps1's Stop hook - feeds InteractiveProjectTranscriptPaths so a
+    // later phone prompt to this directory can read real recent context from it.
+    [property: JsonPropertyName("transcript_path")] string? TranscriptPath = null
 );
 
 // Questions/Answers are kept as raw JsonElement - the API is a dumb relay that never

@@ -87,6 +87,7 @@ $authHeaders = if ($apiToken) { @{"X-AethelHook-Token" = $apiToken} } else { @{}
 $notifyBody = @{ message = "Claude Code finished" }
 if ($summary) { $notifyBody.detail = $summary }
 if ($cwd) { $notifyBody.cwd = $cwd }
+if ($transcriptPath) { $notifyBody.transcript_path = $transcriptPath }
 
 try {
     $json      = $notifyBody | ConvertTo-Json -Compress
