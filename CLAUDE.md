@@ -1613,8 +1613,8 @@ changelog (see git history / memory for that), just enough to orient the next se
 
 **As of 2026-08-27, later the same day (Session Access "join the live IDE session"
 design replaced with a safer context-injection approach after live testing found a
-real data-loss bug - deployed and verified on the dev machine, installer version
-bumped, not yet rebuilt into a signed `.exe`):**
+real data-loss bug - deployed and verified on the dev machine, installer rebuilt
+and published as a new, correctly-versioned GitHub release, website synced):**
 
 - **Full detail in gotcha #45 above.** Short version: picked up a handoff from an
   earlier session that had built (but not yet deployed) an idle-detection gate
@@ -1655,10 +1655,26 @@ bumped, not yet rebuilt into a signed `.exe`):**
   subsequent phone prompt logged
   `[SendPrompt] Folded in IDE context for C:\AethelHook (6151 chars)` and completed
   successfully.
-- **Windows installer `AppVersion` bumped 1.5 -> 1.6** for this change. Not yet
-  rebuilt into a signed `AethelHook-Setup.exe` or re-uploaded to the GitHub
-  release - only this dev machine's live service (via `install.ps1`) has the new
-  code deployed so far.
+- **Windows installer `AppVersion` bumped 1.5 -> 1.6**, rebuilt end to end
+  (`dotnet publish` for both API and Tray, `ISCC.exe AethelHook.iss`) into a fresh
+  `AethelHook-Setup.exe`.
+- **Broke from the long-standing "always dump into the v1.0.0 release" convention**
+  (see the many `--clobber`-to-`v1.0.0` mentions throughout this file's older
+  status entries) **on explicit user request** - the `v1.0.0` tag had drifted
+  further from reality every time (its title still reads "v1.0.0" while the asset
+  inside had quietly become whatever `AppVersion` was current, up to 1.5). Instead
+  of another `--clobber` reupload, created a genuinely new GitHub release/tag
+  **`v1.6`** (`gh release create v1.6 AethelHook-Setup.exe ...`) so the tag itself
+  matches the installer's real version going forward. **The old `v1.0.0` release
+  is left as-is, untouched, still holding its own (now stale) installer** - not
+  deleted, in case anything still links to it. Future installer-only rebuilds
+  should each get their own new version-matched tag/release (e.g. `v1.7`, `v1.8`,
+  ...) rather than reviving the old `v1.0.0`-reupload habit - update this note if
+  the user asks for yet another scheme.
+- **Website (`aethelst8.github.io`) synced in the same pass**, per the standing
+  `feedback_website_sync_after_installer_changes` rule: `Download.jsx`'s Windows
+  download link updated from the stale `v1.0.0/AethelHook-Setup.exe` URL to
+  `v1.6/AethelHook-Setup.exe`. Lint clean, committed, pushed.
 
 **As of 2026-08-27 (R8-enabled release build finished, signed, sideload-tested,
 and confirmed working - not yet uploaded to Play Console; one unrelated Play
